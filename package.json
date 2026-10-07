@@ -1,0 +1,41 @@
+{
+    "name": "svision-cs-frontend",
+    "version": "1.0.0",
+    "type": "module",
+    "description": "SVision UI - React + Tauri v2 Desktop App",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "serve": "vite preview",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "tauri": "LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu tauri",
+        "start": "npm run tauri -- dev"
+    },
+    "author": "Gabriel Moraes",
+    "license": "AGPL-3.0-or-later",
+    "dependencies": {
+        "@tauri-apps/api": "^2.0.0",
+        "clsx": "^2.1.1",
+        "echarts": "^6.0.0",
+        "echarts-for-react": "^3.0.6",
+        "lucide-react": "^1.7.0",
+        "react": "^19.2.4",
+        "react-dom": "^19.2.4",
+        "tailwind-merge": "^3.5.0"
+    },
+    "devDependencies": {
+        "@tailwindcss/postcss": "^4.2.2",
+        "@tauri-apps/cli": "^2.0.0",
+        "@testing-library/dom": "^10.4.1",
+        "@testing-library/jest-dom": "^7.0.1",
+        "@testing-library/react": "^16.3.3",
+        "@vitejs/plugin-react": "^6.0.1",
+        "autoprefixer": "^10.4.27",
+        "jsdom": "^30.0.1",
+        "postcss": "^8.5.8",
+        "tailwindcss": "^4.2.2",
+        "vite": "^8.0.2",
+        "vitest": "^5.0.0"
+    }
+}

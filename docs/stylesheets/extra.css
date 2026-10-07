@@ -1,0 +1,27 @@
+/* ==============================================================================
+   SVISION — Technical Documentation Custom Extra CSS
+   Copyright (C) 2026 — Noxfort Systems
+   ============================================================================== */
+
+:root {
+  --md-primary-fg-color: #00796b;
+  --md-primary-fg-color--light: #26a69a;
+  --md-primary-fg-color--dark: #004d40;
+  --md-accent-fg-color: #00b0ff;
+}
+
+/* Centralized mermaid diagrams with responsive borders */
+.mermaid {
+  text-align: center;
+  margin: 1.5em 0;
+}
+
+/* Callout and admonition formatting */
+.md-typeset .admonition {
+  border-radius: 6px;
+}
+
+/* Custom styling for tables */
+.md-typeset table:not([class]) {
+  font-size: 0.85rem;
+}

@@ -1,0 +1,25 @@
+==================================================
+RELATÓRIO DE REQUISITOS DE HARDWARE - SVISION CORE
+==================================================
+
+1. INFORMAÇÕES TÉCNICAS GERAIS
+--------------------------------------------------
+Sistema Operacional : Suporta Linux 6.17.0-35-generic (64bit) ou superior.
+Arquitetura         : Exige 64-bit obrigatoriamente.
+Conexão c/ Internet : Requer banda larga (Estimativa: 90 Mbps por câmera no pior cenário).
+Dependências        : Python 3.8+, bibliotecas do requirements.txt.
+
+2. MÉTRICAS BRUTAS OBTIDAS (TESTE COM 900 CÂMERAS MOCK - PIOR CENÁRIO)
+--------------------------------------------------
+- RAM Utilizada (S/ SO): 2864.7 MB
+- VRAM (GPU) Utilizada: 974.0 MB
+- Uso Máximo de CPU (Threads): 161.0%
+
+3. REQUISITOS DE HARDWARE RECOMENDADOS (Porte: Cidade Grande)
+--------------------------------------------------
+Processador (CPU)   : 10 Núcleos reais (ou threads lógicas)
+Memória (RAM)       : 16 GB (Já inclui folga e uso do sistema operacional)
+Armazenamento       : 32 GB (SSD Obrigatório para fluxo massivo de dados)
+Placa de Vídeo (GPU): Dedicada com 4 GB VRAM
+
+==================================================

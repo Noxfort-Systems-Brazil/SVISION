@@ -1,0 +1,160 @@
+# ==============================================================================
+# SVISION (Synapse Vision) — MkDocs Configuration (Material for MkDocs)
+# Sovereign Edge AI Platform for Real-Time Urban Traffic Analysis
+# Copyright (C) 2026 — Noxfort Systems
+# ==============================================================================
+
+site_name: "SVISION (Synapse Vision) — Technical Documentation"
+site_description: "Internal technical documentation for SVISION (Synapse Vision) — sovereign edge vision & traffic intelligence platform."
+site_author: "Gabriel Moraes — Noxfort Systems"
+copyright: "Copyright &copy; 2026 — Noxfort Systems"
+
+# Exclude conflicting GitHub folder readme from MkDocs build
+exclude_docs: |
+  /README.md
+
+validation:
+  omitted_files: ignore
+  absolute_links: ignore
+  unrecognized_links: ignore
+  links:
+    not_found: ignore
+    absolute_links: ignore
+    unrecognized_links: ignore
+    anchors: ignore
+
+# ==============================================================================
+# Theme
+# ==============================================================================
+theme:
+  name: material
+  language: en
+  logo: assets/svision-logo.png
+  favicon: assets/svision-logo.png
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: light blue
+      toggle:
+        icon: material/weather-sunny
+        name: Light Mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: light blue
+      toggle:
+        icon: material/weather-night
+        name: Dark Mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.path
+    - navigation.instant
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+# ==============================================================================
+# Markdown Extensions
+# ==============================================================================
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+
+# ==============================================================================
+# Plugins
+# ==============================================================================
+plugins:
+  - search
+
+# ==============================================================================
+# Navigation
+# ==============================================================================
+nav:
+  - Overview: index.md
+  - Master MOC: SVISION_MOC.md
+  - Core Architecture & Edge:
+    - System Architecture: architecture-overview.md
+    - Zero-Port IPC: ipc-architecture.md
+    - API & IPC Reference: api-and-ipc-reference.md
+    - Security & LGPD: security-lgpd.md
+  - Computer Vision & AI:
+    - GPU Inference Pipeline: gpu-pipeline.md
+    - Vision Subsystem: vision-subsystem.md
+    - Camera Lifecycle & SCS: camera-lifecycle.md
+  - Network & Dispatcher:
+    - Go Synapse Dispatcher: synapse-dispatcher-go.md
+    - Data Egress & RAM Buffer: data-egress.md
+  - Frontend & Configuration:
+    - Tauri Desktop UI: desktop-ui-tauri.md
+    - Configuration & SQLite: configuration-reference.md
+  - Operations & QA:
+    - Development & Testing: development-testing.md
+    - Edge Deployment: deployment-operations.md
+  - Multi-Language Hubs:
+    - 🇺🇸 English:
+      - Hub: en/README.md
+      - Master MOC: en/svision_moc.md
+      - System Architecture: en/architecture_overview.md
+      - GPU Pipeline: en/gpu_pipeline.md
+      - Vision Subsystem: en/vision_subsystem.md
+      - Zero-Port IPC: en/ipc_architecture.md
+      - Go Dispatcher: en/synapse_dispatcher_go.md
+      - Camera Lifecycle: en/camera_lifecycle.md
+      - Data Egress: en/data_egress.md
+      - Desktop UI: en/desktop_ui_tauri.md
+      - Security & LGPD: en/security_lgpd.md
+      - API & IPC Reference: en/api_and_ipc_reference.md
+      - Configuration: en/configuration_reference.md
+      - Development & Testing: en/development_testing.md
+      - Edge Deployment: en/deployment_operations.md
+    - 🇧🇷 Português (Brasil):
+      - Central: pt-br/README.md
+      - Master MOC: pt-br/svision_moc.md
+      - Arquitetura do Sistema: pt-br/architecture_overview.md
+      - Pipeline de Inferência GPU: pt-br/gpu_pipeline.md
+      - Subsistema de Visão: pt-br/vision_subsystem.md
+      - Arquitetura IPC Zero-Port: pt-br/ipc_architecture.md
+      - Despachante Go Synapse: pt-br/synapse_dispatcher_go.md
+      - Ciclo de Vida da Câmera: pt-br/camera_lifecycle.md
+      - Egress de Dados & MicroBatcher: pt-br/data_egress.md
+      - Interface Desktop Tauri: pt-br/desktop_ui_tauri.md
+      - Segurança & LGPD: pt-br/security_lgpd.md
+      - Referência de API e IPC: pt-br/api_and_ipc_reference.md
+      - Referência de Configuração: pt-br/configuration_reference.md
+      - Desenvolvimento & Testes: pt-br/development_testing.md
+      - Implantação & Operações: pt-br/deployment_operations.md
+    - 🇫🇷 Français: fr/README.md
+    - 🇪🇸 Español: es/README.md
+    - 🇷🇺 Русский: ru/README.md
+    - 🇨🇳 简体中文: zh/README.md
+
+# ==============================================================================
+# Extra CSS
+# ==============================================================================
+extra_css:
+  - stylesheets/extra.css

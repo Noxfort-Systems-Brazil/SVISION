@@ -1,0 +1,33 @@
+[run]
+branch = True
+source =
+    src
+omit =
+    */__pycache__/*
+    */tests/*
+    */node_modules/*
+    */ui/*
+    */scripts/*
+    */dist/*
+    */src-tauri/*
+    */svision-go/*
+    src/main.py
+
+[report]
+show_missing = True
+precision = 2
+fail_under = 65
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    pass
+
+[xml]
+output = coverage.xml
+
+[html]
+directory = htmlcov

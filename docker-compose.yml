@@ -1,0 +1,48 @@
+# SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
+# Copyright (C) 2026 Noxfort Systems
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+# File: docker-compose.yml
+# Author: Gabriel Moraes
+# Date: 2026-10-06
+#
+# SVision Docker Compose Specification
+version: "3.8"
+
+services:
+  svision-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: svision-core-engine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - SVISION_ENV=production
+      - SVISION_SYNAPSE_HOST=127.0.0.1
+      - SVISION_SYNAPSE_BASE_PORT=9001
+      - SVISION_SYNAPSE_UDS_PATH=/tmp/svision_synapse.sock
+    volumes:
+      - svision-data:/root/Documents/Svision/database
+      - /tmp:/tmp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  svision-data:
+    driver: local

@@ -1,0 +1,74 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Tauri / Rust build artifacts
+src-tauri/target/
+
+# Go build artifacts
+svision-go/bin/
+svision-go/svision-go
+bin/*
+!bin/.gitkeep
+
+# Deep learning weights & compiled engines
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# Distribution / packaging
+build/
+*.egg-info/
+*.egg
+
+# Testing & Coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Logs & Temporary files
+*.log
+*.tmp
+/tmp/svision*
+
+# SQLite Databases & Local Storage
+*.db
+*.sqlite3
+
+# MkDocs site output
+site/
+
+# IDE & Editor artifacts
+.vscode/
+.idea/
+.obsidian/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

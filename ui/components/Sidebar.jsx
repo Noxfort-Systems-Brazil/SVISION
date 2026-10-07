@@ -23,8 +23,9 @@
  */
 
 import React from 'react';
-import { ShieldAlert, Cpu, Network, Video, Settings, LifeBuoy, MoreHorizontal } from 'lucide-react';
+import { Cpu, Network, Video, Settings, LifeBuoy, MoreHorizontal } from 'lucide-react';
 import { useTranslation } from '../contexts/LanguageContext';
+import svisionLogo from '../assets/svision-logo.png';
 
 function NavItem({ active, onClick, icon, label }) {
     return (
@@ -50,9 +51,11 @@ export function Sidebar({ activeTab, onTabChange }) {
         <aside className="w-[240px] shrink-0 border-r border-border bg-card flex flex-col py-4">
             {/* Brand / Logo */}
             <div className="flex items-center gap-3 px-5 mb-6 cursor-default">
-                <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center">
-                    <ShieldAlert className="w-4 h-4 text-primary-foreground" />
-                </div>
+                <img
+                    src={svisionLogo}
+                    alt="SVision Logo"
+                    className="w-8 h-8 object-contain drop-shadow-sm select-none"
+                />
                 <span className="text-sm font-semibold tracking-tight text-foreground">{t('app_name')}</span>
             </div>
 

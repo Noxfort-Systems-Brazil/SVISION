@@ -1,8 +1,3 @@
----
-tags: [readme, home, svision]
-aliases: [Projeto SVISION, Root, SVISION]
----
-
 <div align="center">
 
 <img src="docs/assets/svision-logo.png" alt="SVISION Logo" width="130" />

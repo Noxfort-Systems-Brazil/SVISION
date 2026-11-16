@@ -1,244 +1,226 @@
----
-title: "API and IPC Reference — Protocols, Commands and Events"
-tags: [svision, api, ipc, protocol, json, commands, events, reference]
-aliases: ["API Reference", "IPC Reference", "Protocol Specification"]
-updated: 2026-09-05
-category: "Desktop Interface & IPC Bridge"
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-[🏠 Home](index.md) › **API & IPC Reference**
+# API & IPC Reference
+
+Complete contract specification for all inter-process interfaces in SVISION Core: **STDIN/STDOUT NDJSON (Tauri ↔ Python)**, **Unix Domain Socket (Python ↔ Go Synapse Dispatcher)**, **TCP Fluid Flow Egress (Go → Synapse)**, and the **optional HTTP/WebSocket API (`src/api/`)**.
 
 ---
 
-# API and IPC Reference — Protocols, Commands and Events
+## 1. STDIN Commands (Tauri/Host → Python `StdioDaemon`)
 
-> SVision — Architecture Documentation  
-> Copyright © 2026 Gabriel Moraes — Noxfort Systems
+Implemented in `src/ipc/command_handlers.py` and dispatched by `src/ipc/command_router.py`. All commands are single-line NDJSON objects containing `"cmd"`.
 
----
-
-## Overview
-
-This document formally specifies all inter-process communication contracts implemented in SVision:
-1. **Primary IPC Channel (Tauri v2 ↔ Python Core)** via newline-delimited (`\n`) JSON streams over standard `STDIN` / `STDOUT` pipes.
-2. **Edge Network Channel (Python Core ↔ Go Dispatcher)** via Unix Domain Sockets at `/tmp/svision_synapse.sock`.
-
-Refer to [IPC Architecture](ipc-architecture.md) for architectural topology and process isolation boundaries.
-
----
-
-## 1. IPC Base Protocol Contracts (`src/ipc/ipc_protocol.py`)
-
-All messages exchanged over STDIN and STDOUT are serialized as single-line JSON objects terminated by `\n`.
-
-### A. Command Request (`IpcMessage` — STDIN)
-Dispatched by the Tauri host (Rust) to the Python process:
+### `ping`
+Health check command.
 ```json
-{
-    "id": "req-9a7c-42b1",
-    "action": "add_camera",
-    "payload": { ... }
-}
+{"cmd": "ping"}
 ```
 
-### B. Command Response (`IpcResponse` — STDOUT)
-Returned by Python in direct response to a command request:
+### `sync_state`
+Requests an immediate snapshot of cameras, hardware telemetry, network stats, Go port mappings, `synapse_host`, saved `homography_matrices`, and `camera_params`.
 ```json
-{
-    "type": "response",
-    "id": "req-9a7c-42b1",
-    "success": true,
-    "result": { ... },
-    "error": null
-}
+{"cmd": "sync_state"}
 ```
 
-### C. Telemetry Event (`IpcEvent` — STDOUT)
-Emitted periodically or upon state transitions:
+### `add_camera`
+Registers a sensor in `CameraStateManager`, persists `CameraNode` to SQLite, binds a TCP egress port via UDS `ATTACH_CAMERA`, starts `NvdecStreamDecoder` reader thread, and queues `SCSOrchestrator`.
 ```json
 {
-    "type": "event",
-    "event": "cameras",
-    "data": [ ... ]
-}
-```
-
----
-
-## 2. Inbound IPC Commands Catalog (via STDIN)
-
-Command handlers are centralized in [`src/ipc/command_handlers.py`](file:///home/gabriel-moraes/Documentos/SVISION_CORE/src/ipc/command_handlers.py).
-
-### 1. `ping`
-- **Description**: Quick healthcheck confirming daemon responsiveness.
-- **Payload**: None (`null` or `{}`).
-- **Return (`result`)**: `"pong"`.
-
-### 2. `sync_state`
-- **Description**: Requests a full state snapshot during desktop UI startup.
-- **Payload**: None.
-- **Return (`result`)**:
-```json
-{
-    "cameras": [ ... ],
-    "engine_stats": {
-        "fps_average": 29.4,
-        "active_gear": "Small",
-        "vram_mb": 2150
-    },
-    "network_stats": {
-        "connected": true,
-        "packets_sent": 1420
-    },
-    "synapse_ports": {
-        "cam_01": 9001
-    },
-    "synapse_host": "127.0.0.1"
-}
-```
-
-### 3. `add_camera`
-- **Description**: Registers a new sensor, initiates NVDEC RTSP stream decoding, and enqueues background SCS calibration.
-- **Payload**:
-```json
-{
-    "id": "cam_01",
-    "name": "North Blvd & 5th Ave",
-    "address": "rtsp://192.168.1.50:554/stream1",
-    "sensor_id": "sensor_north_01",
+  "cmd": "add_camera",
+  "camera": {
+    "id": "cam-01",
+    "name": "Av. Paulista - Norte",
+    "address": "rtsp://admin:pass@10.0.0.15:554/stream1",
+    "sensor_id": "CAM_NORTE_01",
     "synapse_port": 9001
-}
-```
-- **Return (`result`)**:
-```json
-{
-    "id": "cam_01",
-    "camera": { ... }
+  }
 }
 ```
 
-### 4. `remove_camera`
-- **Description**: Disconnects the RTSP video stream, removes sensor state, and deallocates ports in the Go Dispatcher.
-- **Payload**:
+### `remove_camera`
+Stops frame decoding and calibration, deletes persisted row from SQLite, and issues `DETACH_CAMERA` over UDS.
 ```json
 {
-    "id": "cam_01"
-}
-```
-- **Return (`result`)**:
-```json
-{
-    "id": "cam_01"
+  "cmd": "remove_camera",
+  "id": "cam-01"
 }
 ```
 
-### 5. `set_cameras`
-- **Description**: Replaces the entire camera registry (used during CSV batch provisioning or backup restore).
-- **Payload**: Array of camera objects.
-- **Return (`result`)**:
+### `set_cameras`
+Replaces/synchronizes the declared sensor list cleanly.
 ```json
 {
-    "count": 4
+  "cmd": "set_cameras",
+  "cameras": [
+    {
+      "id": "cam-01",
+      "name": "Av. Paulista - Norte",
+      "address": "rtsp://10.0.0.15:554/stream1",
+      "sensor_id": "CAM_NORTE_01",
+      "synapse_port": 9001
+    }
+  ]
 }
 ```
 
-### 6. `update_synapse_config`
-- **Description**: Updates the central Synapse cluster address at runtime and persists values to `settings.ini`.
-- **Payload**:
+### `update_synapse_config`
+Updates target Synapse destination host (`synapse_host`), updates `settings.ini`, and sends `UPDATE_CONFIG` to `bin/synapse-dispatcher`.
 ```json
 {
-    "host": "10.0.0.150"
+  "cmd": "update_synapse_config",
+  "synapse_host": "192.168.10.50"
 }
 ```
-- **Return (`result`)**:
+
+### `set_homography`
+Persists and activates a `3x3` projective transformation matrix for metric speed calculation (`FluidFlowEstimator`). Accepts either an explicit `matrix` (`3x3` array) or `>= 4` corresponding `image_points` / `world_points` pairs computed via `AutoLaneMapper.compute_homography_from_points()`.
+
 ```json
 {
-    "host": "10.0.0.150",
-    "base_port": 9001
+  "cmd": "set_homography",
+  "camera_id": "cam-01",
+  "image_points": [[120, 620], [1160, 620], [820, 280], [440, 280]],
+  "world_points": [[0.0, 0.0], [10.5, 0.0], [10.5, 35.0], [0.0, 35.0]]
+}
+```
+*Alternative explicit matrix form:*
+```json
+{
+  "cmd": "set_homography",
+  "camera_id": "cam-01",
+  "matrix": [
+    [0.014, 0.001, -1.68],
+    [-0.002, 0.045, -12.4],
+    [0.0, 0.001, 1.0]
+  ]
+}
+```
+
+### `update_camera_params`
+Updates live inference & calibration parameters in `CameraStateManager` (persisted to SQLite `params_json`) with automatic validation clamping (`confidence_threshold` and `nms_threshold` clamped to `[0.05, 0.99]`).
+```json
+{
+  "cmd": "update_camera_params",
+  "camera_id": "cam-01",
+  "params": {
+    "confidence_threshold": 0.45,
+    "nms_threshold": 0.50,
+    "exposure_compensation": 0.0,
+    "gamma": 1.0,
+    "nominal_direction": 90.0,
+    "approach": "Norte-Sul"
+  }
 }
 ```
 
 ---
 
-## 3. Outbound Telemetry Events Catalog (via STDOUT)
+## 2. STDOUT Telemetry Events (Python → Tauri Host)
 
-Events are printed to STDOUT by Python, intercepted by the Rust listener, and relayed to Tauri's WebView as named `svision:<event>` events:
+Emitted by `StdioDaemon` and `TelemetryBroadcaster` (`src/ipc/telemetry_broadcaster.py`):
 
-| Topic (`svision:<topic>`) | Frequency | Data Payload (`data`) |
-|---------------------------|-----------|------------------------|
-| `cameras` | On change / 1s | Updated list of sensors, RTSP streams, lifecycle states (`BOOT`, `SCS`, `PRODUCTION`), and SCS calibration scores. |
-| `engine_stats` | 1 Hz continuous | GPU VRAM usage (MB), CPU usage (%), GPU core temperature (°C), average FPS, and active YOLO inference gear. |
-| `network_stats` | 1 Hz continuous | Synapse cluster connection status, total dispatched packets, and volatile RAM buffer usage. |
-| `synapse_ports` | On change | Mapping dictionary linking active camera IDs to dedicated outbound TCP ports managed by the Go Dispatcher. |
-
----
-
-## 4. Go Synapse Dispatcher UDS Protocol
-
-The client [`src/network/synapse_uds_client.py`](data-egress.md) communicates with [`svision-go`](synapse-dispatcher-go.md) over `/tmp/svision_synapse.sock`:
-
-### Commands Dispatched to Go (`cmd`)
-
-1. **`ATTACH_CAMERA`**:
-   - Requests dedicated TCP port allocation for the given camera.
-   - Request: `{"cmd":"ATTACH_CAMERA", "camera_id":"cam_01", "sensor_id":"sensor_paulista", "preferred_port":9001}`
-2. **`DETACH_CAMERA`**:
-   - Closes the active stream and deallocates the port.
-   - Request: `{"cmd":"DETACH_CAMERA", "camera_id":"cam_01"}`
-3. **`UPDATE_CONFIG`**:
-   - Updates target Synapse server IP or hostname.
-   - Request: `{"cmd":"UPDATE_CONFIG", "synapse_host":"10.0.0.200"}`
-4. **`PUSH_TELEMETRY`**:
-   - Streams an aggregated traffic payload (Schema v2.0).
-   - Request: `{"cmd":"PUSH_TELEMETRY", "sensor_id":"sensor_paulista", "payload":{...}}`
-
-### Events Emitted by Go (`event`)
-
-1. **`STATUS_CHANGE`**:
-   - Reports physical socket connection transitions.
-   - Event: `{"event":"STATUS_CHANGE", "camera_id":"cam_01", "sensor_id":"sensor_paulista", "port":9001, "status":"CONNECTED"}`
+| Event `type` | Trigger | Payload Contents |
+| :--- | :--- | :--- |
+| **`ready`** | Boot complete | `status`, `hydrated_cameras` count |
+| **`cameras`** | Periodic (`1.0s`) + changes | List of camera objects (`id`, `name`, `address`, `sensor_id`, `synapse_port`, `status`, `fps`, `gear`, `homography_matrix`, `tuning_params`, `latest_traffic`) |
+| **`engine_stats`** | Periodic (`1.0s`) | GPU/CPU load, VRAM/RAM used & total, GPU temperature, active `ModelGearbox` gear, average inference ms, `SliceScheduler` slice metrics |
+| **`network_stats`** | Periodic (`1.0s`) | Per-camera latest fluid egress snapshot (`channels`, `calibrated`, `is_heartbeat`, byte counters) |
+| **`synapse_ports`** | Periodic + UDS updates | Map `camera_id -> {port, sensor_id, status, host}` reported by Go |
+| **`network_latency`** | Periodic (`1.0s`) | Per-camera egress and processing latency readings |
+| **`gpu_health_alert`** | Threshold breach | Alert severity/message when VRAM or GPU temperature crosses `ElasticGovernor` safety thresholds |
 
 ---
 
-## 5. FastAPI Engine Server & Local IPC Interfaces (`src/api/`)
+## 3. UDS Protocol (Python `SynapseUDSClient` ↔ Go `uds_server.go`)
 
-In addition to the zero-port STDIN/STDOUT IPC channel (`src/ipc/`) used by the sovereign Tauri v2 desktop frontend, SVISION provides an enterprise-grade local API server in `src/api/` for web dashboards, developer tools, and low-latency IPC bridges:
+Transport: Unix Domain Stream Socket `/tmp/svision_synapse.sock` (`chmod 0600`), NDJSON frames up to `1 MB`.
 
-### Architecture & Components
-- **Application Factory (`src/api/core_server.py`)**: Instantiates FastAPI with an asynchronous lifespan manager, CORS configuration, and token exchange endpoint.
-- **Authentication (`src/api/security.py`)**: `LocalTokenManager` generates cryptographically strong tokens (`secrets.token_urlsafe(32)`) persisted to `/tmp/svision_api_key.txt` with restrictive POSIX `0600` permissions.
-- **WebSocket Gateway (`src/api/ws_router.py`)**: High-throughput WebSocket server at `/ws?token=...` utilizing binary MessagePack (`msgpack`) serialization:
-  - **Handshake Sync**: Emits current state snapshots (`cameras`, `engine_stats`, `network_stats`) immediately upon connection.
-  - **Inbound Topics**: Accepts `add_camera` (triggers NVDEC decoder and SCS calibration), `set_cameras` (batch activation), and `remove_camera` (pipeline teardown).
-- **Unix Domain Socket Bridge (`src/api/uds_router.py`)**: High-performance local binary channel at `/tmp/svision-ui.sock` using 4-byte big-endian length prefix framing + MessagePack payloads for zero-network overhead.
-- **Hardware Telemetry Service (`src/api/telemetry_service.py`)**: Samples GPU VRAM/temperature (via NVML) and system CPU/RAM (via psutil in `hardware_telemetry.py`), broadcasting synchronized telemetry frames at 1 Hz via `CompositeBroadcaster` across both WebSocket and UDS subscribers.
+### Commands (Python → Go)
+- **Attach port:**
+  ```json
+  {"cmd": "ATTACH_CAMERA", "camera_id": "cam-01", "sensor_id": "CAM_NORTE_01", "preferred_port": 9001}
+  ```
+- **Detach port:**
+  ```json
+  {"cmd": "DETACH_CAMERA", "camera_id": "cam-01"}
+  ```
+- **Dispatch fluid telemetry (Zero-Backlog):**
+  ```json
+  {"cmd": "DATA", "camera_id": "cam-01", "payload": {"camera_id": "CAM_NORTE_01", "timestamp": 1794841200123, "is_heartbeat": false, "calibrated": true, "channels": [{"direction_deg": 92.4, "speed": 48.6, "density": 0.24}]}}
+  ```
+- **Update host:**
+  ```json
+  {"cmd": "UPDATE_CONFIG", "synapse_host": "192.168.10.50"}
+  ```
+- **Liveness ping:**
+  ```json
+  {"cmd": "PING"}
+  ```
 
-### HTTP Endpoints
-| Method | Route | Auth | Description |
-|---|---|---|---|
-| `GET` | `/api/token` | Local filesystem | Returns the active ephemeral API token for frontend WebSocket handshakes. |
-
-### WebSocket Frame Format (`/ws`)
-- **Handshake URI**: `ws://localhost:8000/ws?token=<local_token>`
-- **Framing**: Binary MessagePack (`application/msgpack`)
-- **Handshake Rejection**: Closes with code `4001` if token is missing or invalid.
+### Events (Go → Python)
+- `{"event": "CAMERA_BOUND", "camera_id": "cam-01", "sensor_id": "CAM_NORTE_01", "port": 9001, "status": "READY"}`
+- `{"event": "CAMERA_DETACHED", "camera_id": "cam-01", "status": "CLOSED"}`
+- `{"event": "STATUS_CHANGE", "camera_id": "cam-01", "sensor_id": "CAM_NORTE_01", "port": 9001, "status": "CONNECTING" | "CONNECTED" | "DISCONNECTED" | "CLOSED"}`
+- `{"event": "CONFIG_UPDATED", "status": "OK"}`
+- `{"event": "PONG", "status": "OK"}`
+- `{"event": "ERROR", "message": "..."}`
 
 ---
 
-## Related Documents
+## 4. TCP Output Stream (Go `CameraStream` → Synapse Nodes)
 
-- [🏠 Main Index / MOC](index.md)
-- [🔌 Zero-Port IPC Architecture](ipc-architecture.md)
-- [🖥️ Desktop UI (Tauri v2)](desktop-ui-tauri.md)
-- [🌐 Go Synapse Dispatcher](synapse-dispatcher-go.md)
-- [📤 Data Egress & Telemetry](data-egress.md)
-- [⚙️ Configuration Reference](configuration-reference.md)
+Each bound camera port (`9001+`) emits `\n`-delimited UTF-8 NDJSON fluid payloads built by `SynapseBuilder.build_fluid_payload`:
+
+```json
+{
+  "camera_id": "CAM_NORTE_01",
+  "timestamp": 1794841200123,
+  "is_heartbeat": false,
+  "calibrated": true,
+  "channels": [
+    {
+      "direction_deg": 92.4,
+      "speed": 48.6,
+      "density": 0.24
+    }
+  ]
+}
+```
+When no moving vehicles are detected during the window:
+```json
+{
+  "camera_id": "CAM_NORTE_01",
+  "timestamp": 1794841201123,
+  "is_heartbeat": true,
+  "calibrated": true,
+  "channels": [
+    {
+      "direction_deg": 0.0,
+      "speed": 0.0,
+      "density": 0.0
+    }
+  ]
+}
+```
 
 ---
 
-<div align="center">
-  <img src="assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
-</div>
+## 5. Optional FastAPI HTTP / WebSocket Server (`src/api/`)
+
+When launched via `src/main.py` (`uvicorn` on `:8000`):
+- **Authentication (`src/api/security.py`):** `LocalTokenManager` generates a 64-character hex token (`secrets.token_hex(32)`) stored at `config.API_KEY_FILE` (default `/tmp/svision_api_key`, `0o600`).
+- **Routers:** `src/api/core_server.py`, `ws_router.py`, `uds_router.py`, `telemetry_service.py`, `hardware_telemetry.py`, `uds_commander.py`.
+
+---
+
+## 6. Related Documentation
+
+- [IPC Architecture](ipc-architecture.md)
+- [Data Egress & Flow Engine](data-egress.md)
+- [Synapse Dispatcher (Go)](synapse-dispatcher-go.md)
+- [Desktop UI & Tauri](desktop-ui-tauri.md)
+
+---
+
+*SVISION Core Documentation — v1.2.0 (2026-11-16)*

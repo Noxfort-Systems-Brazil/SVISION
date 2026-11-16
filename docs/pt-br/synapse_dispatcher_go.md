@@ -1,83 +1,77 @@
----
-tags: [svision, go, rede, synapse, despachante, tcp, uds, brasil]
-aliases: [Despachante Go Synapse, Gatekeeper de Rede, svision-go]
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<div align="center">
+# Synapse Dispatcher (Go)
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
-
-# Despachante Go Synapse & Multiplexador de Rede
-### Gatekeeper de Borda em Go 1.22+, Servidor UDS e Multiplexador de Canais TCP
-*Noxfort Systems — A State Of Art Company*
-
-</div>
-
-⬅️ Voltar para a [Central Master MOC](svision_moc.md) | 🏛️ Ver [Arquitetura](architecture_overview.md) | 📤 Ver [Egress de Dados](data_egress.md) | 🔒 Ver [Segurança](security_lgpd.md)
+O módulo `svision-go/` (`package main`, compilado como `bin/synapse-dispatcher`) é o sidecar de rede em Go do SVISION Core. Ele isola a gestão de sockets TCP e alocação de portas do runtime Python, garantindo entrega de telemetria **Zero-Backlog Fire-and-Forget** sem bloqueios no GIL nem retenção de pacotes atrasados.
 
 ---
 
-## 1. Visão Geral
+## 1. Estrutura de Pacote Plano (`svision-go/`)
 
-O **Synapse Dispatcher** (`svision-go/`) é um daemon de rede de altíssima vazão e ultra-baixa latência construído em **Go 1.22+**.
+| Arquivo | Responsabilidade |
+| :--- | :--- |
+| [`main.go`](../../svision-go/main.go) | Parseia flags (`--uds`, `--host`, `--base-port`), inicializa `PortManager` e `UDSServer` e trata `SIGINT`/`SIGTERM`. |
+| [`uds_server.go`](../../svision-go/uds_server.go) | Socket Unix `/tmp/svision_synapse.sock` com permissão estrita `0600` (`SVISION_SYNAPSE_UDS_MODE`), leitura NDJSON limitada a `1 MB` e despacho de comandos. |
+| [`port_manager.go`](../../svision-go/port_manager.go) | Orquestra vínculos de câmeras (`AttachCamera`, `DetachCamera`, `PushData`, `UpdateHost`) e eventos de status. |
+| [`port_allocator.go`](../../svision-go/port_allocator.go) | Pool thread-safe de portas TCP a partir de `--base-port` (padrão `9001`), respeitando `preferred_port` quando livre. |
+| [`camera_stream.go`](../../svision-go/camera_stream.go) | Interface `StreamDialer`/`DefaultTCPDialer`, worker de reconexão e envio direto `Push([]byte)` sem fila. |
+| `*_test.go` | Cinco arquivos de testes unitários e de integração em Go. |
 
-Ele atua como o **gatekeeper** de rede de borda, blindando o motor cognitivo em Python contra latências transitórias de rede, quedas de pacotes ou degradação de sockets de transporte nas conexões de longa distância com o cluster central Synapse.
+---
 
-```text
-┌───────────────────────────────────────────────────────────────┐
-│                      Despachante Go Synapse                   │
-│                                                               │
-│   ┌───────────────────────────────────────────────────────┐   │
-│   │                      UDSServer                        │   │
-│   │        Unix Domain Socket: /tmp/svision_synapse.sock  │   │
-│   └───────────────────────────┬───────────────────────────┘   │
-│                               │ Comandos e Telemetria         │
-│   ┌───────────────────────────▼───────────────────────────┐   │
-│   │                     PortManager                       │   │
-│   │  ┌─────────────────────────────────────────────────┐  │   │
-│   │  │ Alocador de Portas TCP Dedicadas (Base 9001+)   │  │   │
-│   │  └─────────────────────────────────────────────────┘  │   │
-│   └──────┬────────────────────┬────────────────────┬──────┘   │
-│          │ Canal 1            │ Canal 2            │ Canal N  │
-│   ┌──────▼───────┐     ┌──────▼───────┐     ┌──────▼───────┐  │
-│   │ Fluxo Câmera │     │ Fluxo Câmera │     │ Fluxo Câmera │  │
-│   │ (Buffer TCP) │     │ (Buffer TCP) │     │ (Buffer TCP) │  │
-│   └──────┬───────┘     └──────┬───────┘     └──────┬───────┘  │
-└──────────┼────────────────────┼────────────────────┼──────────┘
-           │ TCP 9001           │ TCP 9002           │ TCP 9003
-           ▼                    ▼                    ▼
-┌───────────────────────────────────────────────────────────────┐
-│                      Cluster Central Synapse                  │
-└───────────────────────────────────────────────────────────────┘
+## 2. Arquitetura Zero-Backlog (Sem Filas em Memória)
+
+```mermaid
+flowchart LR
+    PY["Python SynapseUDSClient"] -->|"UDS NDJSON: DATA"| UDS["UDSServer (uds_server.go)"]
+    UDS -->|"camera_id"| PM["PortManager (port_manager.go)"]
+    PM -->|"Push([]byte) direto"| CS["CameraStream (camera_stream.go)"]
+    CS -->|"conn != nil && !isClosed?"| CHECK{"Socket TCP Aberto?"}
+    CHECK -->|"Sim (WriteDeadline 100ms)"| TCP["TCP NoDelay + KeepAlive (host:port)"]
+    CHECK -->|"Não / Erro de escrita"| DROP["Descarte imediato (0 filas)<br/>Fecha conexão + STATUS DISCONNECTED"]
+```
+
+- **Ausência Deliberada de `chan []byte`:** Não há fila com buffer no `CameraStream`. A função `Push(payload)` adquire o mutex da conexão e grava diretamente no socket TCP (anexando `\n` quando necessário) com timeout de **`100ms`**.
+- **Descarte Instantâneo:** Se o destino estiver indisponível (`isClosed` ou `conn == nil`), o pacote é descartado na hora (`return false`), impedindo explosões de eventos obsoletos quando o receptor volta ao ar.
+- **Reconexão em Background (`runWorker`):** A cada **`2 segundos`**, caso `conn == nil`, o worker tenta restabelecer conexão TCP (`1500ms` de dial timeout) configurando `SetNoDelay(true)` e `KeepAlivePeriod = 10s`.
+
+---
+
+## 3. Protocolo UDS (Python ↔ Go)
+
+### Comandos Recebidos (Python → Go)
+| Comando | Campos | Comportamento e Resposta |
+| :--- | :--- | :--- |
+| **`ATTACH_CAMERA`** | `camera_id`, `sensor_id`, `preferred_port` | Reserva porta TCP e responde com **`CAMERA_BOUND`** (`status: "READY"`, `port`). |
+| **`DETACH_CAMERA`** | `camera_id` | Fecha o stream e libera a porta; responde com **`CAMERA_DETACHED`** (`status: "CLOSED"`). |
+| **`DATA`** | `camera_id`, `payload` | Localiza o `CameraStream` pelo `camera_id` e invoca `Push(payload)` sem bloqueio. |
+| **`UPDATE_CONFIG`** | `synapse_host` | Atualiza o host alvo nos streams ativos, força redial e emite **`CONFIG_UPDATED`**. |
+| **`PING`** | — | Responde imediatamente com **`PONG`**. |
+
+### Eventos Emitidos (Go → Python)
+`CAMERA_BOUND`, `CAMERA_DETACHED`, `STATUS_CHANGE` (`CONNECTING`, `CONNECTED`, `DISCONNECTED`, `CLOSED`), `CONFIG_UPDATED`, `PONG` e `ERROR`.
+
+---
+
+## 4. Compilação e Testes
+
+```bash
+cd svision-go
+go build -o ../bin/synapse-dispatcher .
+go test -v -cover ./...
+go test -race ./...
 ```
 
 ---
 
-## 2. Componentes Internos (`svision-go/`)
+## 5. Documentação Relacionada
 
-### 2.1 Servidor UDS (`pkg/uds/server.go`)
-- Abre e gerencia o Unix Domain Socket local com permissões estritas `0o600` (apenas o usuário de execução tem acesso).
-- Lê mensagens de streaming do Python de maneira concorrente usando goroutines leves.
-- Decodifica o cabeçalho binário e despacha o corpo de telemetria diretamente para os canais de transmissão TCP.
-
-### 2.2 Gerenciador de Portas & Multiplexador (`pkg/multiplexer/port_manager.go`)
-- Aloca dinamicamente uma porta TCP dedicada por câmera cadastrada (`9001`, `9002`, ...).
-- Mantém conexões TCP ativas com keep-alive agressivo.
-- Possui buffers de anel de alta performance que absorvem picos de transmissão sem propagar pressão de retorno (*backpressure*) para o motor Python.
+- [Arquitetura IPC](ipc_architecture.md)
+- [Egress de Dados e Motor de Fluxo](data_egress.md)
+- [Referência de API e IPC](api_and_ipc_reference.md)
+- [Segurança e LGPD](security_lgpd.md)
 
 ---
 
-## 3. Benefícios de Engenharia
-
-1. **Isolamento de Falhas**: Se o link de internet com a nuvem central oscilar ou cair completamente, o daemon em Go gerencia a fila e as tentativas de reconexão; o Python continua processando os quadros da GPU a 30 FPS sem qualquer bloqueio de thread.
-2. **Alta Eficiência de CPU**: Consome menos de 0.5% da CPU da máquina de borda sob carga contínua de telemetria de 16 câmeras simultâneas.
-3. **Binário Único Compilado**: Não requer runtime adicional ou interpretadores instalados no servidor de borda.
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Engenharia de Visão de Borda Soberana • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licenciado sob AGPLv3.</small>
-</div>
+*Documentação SVISION Core — v1.2.0 (2026-11-16)*

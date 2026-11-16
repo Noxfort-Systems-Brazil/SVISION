@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -102,6 +105,10 @@ class InferenceNode:
             for gear_name, weights_path in self.gear_map.items():
                 engine_path = weights_path.replace('.pt', '.engine')
                 
+                if not os.path.exists(weights_path) and not os.path.exists(engine_path):
+                    logger.debug(f"[{gear_name}] Weights absent on disk ({weights_path}), skipping VRAM pre-load.")
+                    continue
+
                 if os.path.exists(engine_path):
                     model = YOLO(engine_path, task='detect')
                     logger.info(f"[{gear_name}] TensorRT engine loaded from cache.")
@@ -109,7 +116,7 @@ class InferenceNode:
                     logger.warning(f"[{gear_name}] Engine absent. Loading PyTorch weights...")
                     model = YOLO(weights_path)
                     try:
-                        model.export(format="engine", half=True, workspace=4, dynamic=True)
+                        model.export(format="engine", half=True, device=0, batch=16, workspace=2, simplify=False, dynamic=True)
                         model = YOLO(engine_path, task='detect')
                         logger.info(f"[{gear_name}] TensorRT FP16 engine compiled and loaded.")
                     except Exception as e:

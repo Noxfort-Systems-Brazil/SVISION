@@ -8,14 +8,14 @@ aliases: [SVISION MOC, Master Documentation Hub, Documentation Index, Knowledge 
 <img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
 
 # SVISION Technical Master Documentation Hub
-### Synapse Vision — Central Index & Edge Vision Architecture Knowledge Vault
+### Synapse Vision — Central Index & Workstation Vision Architecture Knowledge Vault
 *Noxfort Systems — A State Of Art Company*
 
 </div>
 
-Welcome to the **SVISION** (**Synapse Vision**) technical documentation library. Designed as a sovereign, ultra-low latency Edge AI ecosystem for real-time urban traffic analysis and autonomous signal orchestration, SVISION bridges hardware-accelerated computer vision (NVDEC & TensorRT), zero-network parent-child IPC (STDIO), and high-throughput network dispatching (Go).
+Welcome to the **SVISION** (**Synapse Vision**) technical documentation library. Designed as a sovereign, ultra-low latency AI workstation ecosystem for real-time urban traffic analysis and autonomous signal orchestration, SVISION bridges hardware-accelerated computer vision (NVDEC & TensorRT on dedicated NVIDIA GPUs), zero-network parent-child IPC (STDIO), out-of-process self-healing (**F.E.N.I.X.**), and high-throughput network dispatching (Go).
 
-This master documentation index provides deep technical coverage for edge AI engineers, computer vision specialists, network engineers, and system integrators. It is fully compatible with both **GitHub** and **[Obsidian](https://obsidian.md/)**.
+This master documentation index provides deep technical coverage for AI workstation engineers, computer vision specialists, network engineers, and system integrators. It is fully compatible with both **GitHub** and **[Obsidian](https://obsidian.md/)**.
 
 ---
 
@@ -23,89 +23,131 @@ This master documentation index provides deep technical coverage for edge AI eng
 
 ```text
 SVISION_CORE/
-├── svision.py                  # Master Bootstrapper (Process Supervisor, Env Resolver, Go Spawn, IPC)
+├── svision.py                  # Master Bootstrapper (Env Resolver, Go Spawn, Tauri GUI / Daemon / F.E.N.I.X.)
 ├── ARCHITECTURE.md             # Tripartite System Architecture Blueprint (Rust + Python + Go)
-├── pyproject.toml              # Python build configuration & dependencies (Ruff, Pytest)
-├── package.json                # Frontend desktop dependencies (React 19, Tailwind v4, Vite 8)
-├── requirements.txt            # Python edge runtime dependencies (PyTorch, TensorRT, OpenCV)
-├── settings.ini                # Runtime system configuration (Cameras, Inference, Network, Logging)
+├── CHANGELOG.md                # Release History & Engineering Changelog
+├── CONTRIBUTING.md             # Contributor Standards & PR Guidelines
+├── SECURITY.md                 # Vulnerability Disclosure & Security Policy
+├── pyproject.toml              # Python build configuration & Ruff/Pytest settings
+├── package.json                # Frontend desktop dependencies (React 19, Tailwind v4, Vite 8, Playwright)
+├── requirements.txt            # Python workstation runtime dependencies (PyTorch, TensorRT, OpenCV, SQLAlchemy)
+├── settings.ini                # Persistent system configuration ([SYNAPSE] host & base_port)
 ├── sync.sh                     # Automated 1-click git sync and push script
 ├── mkdocs.yml                  # Material for MkDocs technical documentation configuration
+├── Dockerfile                  # Multi-stage Go + Python 3.12 container definition
+├── docker-compose.yml          # Production workstation container orchestration
+├── svision.service             # Linux systemd unit definition for headless daemon
+├── record_presentation.cjs     # Playwright Full-HD (1920x1080) automated demo video generator
 │
-├── bin/                        # Pre-compiled native binaries (svision-go)
-│   └── svision-go              # Compiled Go network gatekeeper binary
+├── bin/                        # Pre-compiled native binaries
+│   └── synapse-dispatcher      # Compiled Go Synapse network gatekeeper binary
 │
 ├── docs/                       # Comprehensive Knowledge Vault & MkDocs Suite
-│   ├── SVISION_MOC.md          # Master Documentation Hub (This File)
+│   ├── SVISION_MOC.md          # Master Documentation Hub (Root Docs)
 │   ├── index.md                # MkDocs Entry Point & Landing Portal
 │   ├── README.md               # Multilingual Documentation Router & Topic Matrix
-│   ├── architecture_overview.md# Tripartite System Architecture & Edge Foundations
-│   ├── gpu_pipeline.md         # CUDA Batch Consumer, TensorRT FP16 & Neural Crop & Zoom
-│   ├── vision_subsystem.md     # NVDEC Video Ingestion, ByteTrack, Homography & Speed Estimation
-│   ├── camera_lifecycle.md     # 5-Stage Camera Onboarding, SCS & Automated Topology Discovery
-│   ├── ipc_architecture.md     # Zero-Port Parent-Child STDIN/STDOUT IPC Protocol
-│   ├── synapse_dispatcher_go.md# Go Synapse Network Gatekeeper & Dynamic TCP Multiplexing
-│   ├── data_egress.md          # 1 Hz MicroBatcher, Schema v2.0 & Volatile RAM Eviction Buffer
-│   ├── desktop_ui_tauri.md     # Tauri v2 Shell, React 19 Frontend & ECharts Telemetry
-│   ├── security_lgpd.md        # Edge Sovereignty, Zero Video Egress & Memory Sanitization
-│   ├── api_and_ipc_reference.md# Inbound STDIN Commands, Outbound Events & UDS Wire Format
-│   ├── configuration_reference.md # Settings Hierarchy, INI Overrides & SQLite Delta Schema
-│   ├── development_testing.md  # Pytest, Vitest, Go Test Suites & Engine Benchmarks
-│   ├── deployment_operations.md# Linux Systemd Service, Docker & Jetson Hardware Guide
 │   ├── assets/                 # Brand assets (svision-logo.png, noxfort-logo.png)
 │   ├── stylesheets/            # Extra documentation styling (extra.css)
 │   ├── pt-br/                  # Complete Brazilian Portuguese documentation suite
-│   ├── en/                     # Canonical English documentation suite
+│   ├── en/                     # Canonical English documentation suite (This Directory)
 │   ├── es/                     # Portal de Documentación Técnica en Español
 │   ├── fr/                     # Portail de Documentation Technique en Français
 │   ├── ru/                     # Портал технической документации на русском
 │   └── zh/                     # 简体中文智能交通系统技术文档库
 │
 ├── scripts/                    # Operational & build scripts
-│   ├── compile_trt.py          # TensorRT INT8 / FP16 engine compiler
-│   └── generate_test_stream.py # RTSP mock stream generator
+│   ├── compile_int8.py         # TensorRT INT8 / FP16 engine compiler (--all, --gear, --batch, --workspace)
+│   └── run_all_tests.sh        # Unified Ruff + Pytest + Go test + Vitest test runner
 │
-├── src/                        # Python Edge AI Cognitive Engine
-│   ├── api/                    # Public API contracts, models and exception handlers
-│   ├── common/                 # Global state manager, logger, schemas & SQLite persistence
-│   ├── engine/                 # Inference orchestration, CUDA batch consumer & SCS sequencer
-│   │   ├── cuda_batcher.py     # Centralized multi-camera batching consumer (FP16/INT8)
-│   │   ├── model_gearbox.py    # Dynamic YOLO 11 model gearbox (Nano, Small, Medium, Heavy)
-│   │   ├── neural_cropper.py   # Motion-directed ROI crop & zoom pipeline
-│   │   └── scs_sequencer.py    # Staggered Calibration Sequencer (MOG2 + DBSCAN)
-│   ├── ipc/                    # Zero-port inter-process communication
-│   │   ├── stdio_daemon.py     # OS pipe STDIN/STDOUT JSON-ND processor
-│   │   ├── command_router.py   # Dispatcher for inbound desktop commands
-│   │   └── telemetry_emitter.py# High-frequency stats streamer to UI host
-│   ├── network/                # Edge egress & telemetry packaging
-│   │   ├── synapse_emitter.py  # Unix Domain Socket push client (`/tmp/svision_synapse.sock`)
-│   │   ├── micro_batcher.py    # 1 Hz metric aggregator (Schema v2.0)
-│   │   └── ram_buffer.py       # Volatile LRU memory queue with ring buffer
-│   └── vision/                 # Computer vision & tracking algorithms
-│       ├── rtsp_decoder.py     # NVDEC hardware-accelerated video decoder
-│       ├── bytetrack.py        # Two-stage kinematic association tracker
-│       ├── homography.py       # Perspective transform & physical speed estimation (km/h)
-│       └── lane_mapper.py      # Spatial GPU point-in-polygon assignment
+├── src/                        # Python Workstation AI Cognitive Engine
+│   ├── main.py                 # FastAPI ASGI entrypoint & LGPD _sanitized_excepthook
+│   ├── api/                    # Hardware telemetry, LGPD security token manager, optional FastAPI/UDS fallback
+│   │   ├── broadcaster.py      # CompositeBroadcaster across WebSocket & UDS fallback
+│   │   ├── core_server.py      # FastAPI app factory & lifespan context
+│   │   ├── hardware_telemetry.py # PyNVML + Psutil sampler (VRAM total/usage, delta bandwidth & delivery)
+│   │   ├── security.py         # LocalTokenManager (/tmp/svision_api_key, 0o600)
+│   │   ├── telemetry_service.py# 1 Hz hardware/stream telemetry loop (FastAPI mode)
+│   │   ├── uds_commander.py    # Legacy/fallback UDS command dispatcher
+│   │   ├── uds_router.py       # Binary MessagePack UDS server (/tmp/svision-ui.sock)
+│   │   └── ws_router.py        # Binary MessagePack WebSocket router (/ws)
+│   ├── common/                 # Configuration, StateManager & SQLite persistence
+│   │   ├── config.py           # SVisionConfig (env vars + settings.ini [SYNAPSE])
+│   │   ├── database.py         # SQLiteStateRepository (CameraNode, TrafficProfileNode)
+│   │   └── state_manager.py    # Per-domain RLock StateManager with SQLite hydration & traffic sampling
+│   ├── engine/                 # Elastic inference fabric, scheduling & fluid dynamics
+│   │   ├── pipeline_orchestrator.py # CentralPipelineOrchestrator facade
+│   │   ├── pipeline_supervisor.py   # Camera discovery & isolated per-camera tracker/gearbox lifecycle
+│   │   ├── slice_scheduler.py       # 12 FPS staggered slice scheduler & per-gear crop bucketing
+│   │   ├── elastic_governor.py      # VRAM & latency feedback controller (batch sizing & gear ceiling)
+│   │   ├── triton_int8_engine.py    # TensorRT INT8/FP16 engine loader, batch chunker & idle gear eviction
+│   │   ├── model_gearbox.py         # Pure EMA + hysteresis + dwell state machine (Nano..Heavy)
+│   │   ├── motion_extractor.py      # Foveated peripheral MOG2 ROI extractor + temporal grid filter
+│   │   ├── ram_staging_pool.py      # Host pinned-RAM staging & async CUDA DMA transfer pool
+│   │   ├── vip_scheduler.py         # High-priority CUDA stream allocator
+│   │   ├── camera_agent.py          # Per-camera execution unit (grab, fluid estimate, gearbox, emit)
+│   │   ├── frame_grabber.py         # Frame grab & fallback inference wrapper
+│   │   ├── inference_node.py        # Legacy co-resident YOLO loader & batch_consumer holder
+│   │   ├── cuda_batch_consumer.py   # Fallback producer-consumer CUDA batch queue
+│   │   ├── fluid_flow_estimator.py  # Eulerian LWR traffic continuum estimator (v, ρ, θ channels)
+│   │   ├── synapse_emitter.py       # 1 Hz continuum emitter + 3s heartbeat + SQLite sample persistence
+│   │   ├── scs_orchestrator.py      # Staggered Calibration Sequencer (max 4 concurrent cameras)
+│   │   └── lifecycle.py             # FastAPI EngineLifecycleManager
+│   ├── fenix/                  # F.E.N.I.X. Out-of-Process Self-Healing Supervisor
+│   │   ├── __init__.py         # Public exports for F.E.N.I.X. subsystem
+│   │   ├── protocols.py        # FenixState enum & SOLID protocols
+│   │   ├── fenix_supervisor.py # FenixSupervisor watchdog & safe resurrection orchestrator
+│   │   ├── process_runner.py   # SubprocessRunner (Popen + SIGTERM/SIGKILL)
+│   │   ├── multiprocessing_runner.py # MultiprocessingProcessRunner adapter
+│   │   ├── recovery_policy.py  # WindowedCrashRecoveryPolicy (sliding window + exponential backoff)
+│   │   └── state_reconciler.py # VisionStateReconciler (CUDA VRAM purge, camera sync, UDS check)
+│   ├── ipc/                    # Zero-port STDIO inter-process communication
+│   │   ├── ipc_protocol.py     # IpcMessage, IpcEvent, IpcResponse JSON-ND envelopes
+│   │   ├── stdio_transport.py  # Thread-safe STDIN/STDOUT pipe reader/writer
+│   │   ├── command_router.py   # Extensible action registry & dispatcher
+│   │   ├── command_handlers.py # 8 IPC action handlers (incl. set_homography & update_camera_params)
+│   │   ├── telemetry_broadcaster.py # 1 Hz telemetry & synapse_ports STDOUT broadcaster
+│   │   └── stdio_daemon.py     # Headless STDIO daemon entrypoint & SQLite camera hydration
+│   ├── models/                 # Neural network models & compiled engines
+│   │   ├── wavelet_ae_occ.py   # WaveletAEOCC anomaly & occlusion autoencoder
+│   │   └── yolo/               # YOLO 11 weights (.pt), ONNX & TensorRT engines (.engine)
+│   ├── network/                # Data egress & continuum packaging
+│   │   ├── micro_batcher.py    # FireForgetBatcher (1 Hz fluid circular-mean & legacy accumulators)
+│   │   ├── synapse_builder.py  # Fluid continuum JSON payload builder & internal-ID UDS dispatcher
+│   │   └── synapse_uds_client.py # Async UDS client (/tmp/svision_synapse.sock) with auto-reconnect
+│   └── vision/                 # Computer vision, decoding & tracking algorithms
+│       ├── stream_decoder.py   # NvdecStreamDecoder (dedicated reader threads, max_dim=720, CPU fallback)
+│       ├── kalman_tracker.py   # ByteTrack 2-stage association + 2D linear Kalman filter
+│       ├── optical_flow.py     # Kornia GPU Farneback sub-pixel optical flow predictor
+│       ├── tracking_types.py   # Track & TrackerConfig dataclasses
+│       ├── lane_mapper.py      # AutoLaneMapper (Node-Level, 4-point homography, world speed, JSON topologies)
+│       └── asc_analyzer.py     # AutonomicSceneConvergence (live-frame SCS + Node-Level promotion)
 │
 ├── src-tauri/                  # Desktop Presentation Host (Rust / Tauri v2)
-│   ├── src/                    # Rust backend: windowing, system tray & OS pipe supervisor
 │   ├── Cargo.toml              # Rust crate manifest & dependencies
-│   └── tauri.conf.json         # Tauri v2 security policies & window configurations
+│   ├── tauri.conf.json         # Tauri v2 security policies & window configuration
+│   ├── capabilities/           # Granular WebView permission manifests
+│   └── src/                    # Rust backend (lib.rs, main.rs, backend/{mod.rs,ipc.rs,state.rs})
 │
 ├── svision-go/                 # Network Gatekeeper (Go 1.22+)
-│   ├── cmd/dispatcher/         # Dispatcher entrypoint & UDS socket listener
-│   ├── pkg/multiplexer/        # Dynamic persistent TCP connection pool
-│   ├── pkg/uds/                # High-throughput Unix Domain Socket server (0o600)
-│   └── go.mod                  # Go module definitions & dependencies
+│   ├── main.go                 # CLI flags, env config & graceful shutdown
+│   ├── uds_server.go           # Unix Domain Socket server (0o600, ATTACH_CAMERA/DETACH_CAMERA/DATA/PING)
+│   ├── port_manager.go         # Thread-safe camera-to-TCP-stream registry
+│   ├── port_allocator.go       # LinearPortAllocator (ports 9001..65535)
+│   ├── camera_stream.go        # Zero-backlog TCP push stream with 2s reconnect worker
+│   ├── *_test.go               # 5 Go unit/concurrency test suites
+│   └── go.mod                  # Go module definition
 │
-└── ui/                         # React 19 Frontend Dashboard
-    ├── src/
-    │   ├── components/         # Reusable UI widgets, cards and stream players
-    │   ├── hooks/              # Custom React hooks (useTelemetry, useIPC, useCameras)
-    │   ├── views/              # WorkspaceView, SensorsView, EngineView, NetworkView, SettingsView
-    │   └── locales/            # Internationalization dictionaries (en_us, pt_br)
-    ├── vite.config.js          # Vite build toolchain configuration
-    └── tailwind.config.js      # Tailwind CSS v4 design system
+├── ui/                         # React 19 Frontend Dashboard
+│   ├── core/                   # App.jsx (Demo Mode banner, tab router), main.jsx
+│   ├── views/                  # CamerasTab.jsx, SVisionTab.jsx, SynapseTab.jsx, SettingsTab.jsx
+│   ├── components/             # Sidebar, CameraList, CameraDetailPane (Calibration Modal), SynapseTelemetryGrid, telemetry widgets
+│   ├── hooks/                  # useCameras, useCameraOperations, useConnectionStatus, useEngineStats, useNetworkLatency, useNetworkStats, useResourceChartOptions
+│   ├── services/               # ipc_client.js (Tauri IPC + Demo Mode), cameraCsvService.js
+│   ├── contexts/               # ThemeContext.jsx (localStorage + ?theme=light), LanguageContext.jsx
+│   ├── constants/              # cameraConfig.js
+│   └── locales/                # Internationalization dictionaries (en_us.json, pt_br.json)
+│
+└── tests/                      # Automated Python test suites (23 pytest files + benchmark.py + mock_cameras.py)
 ```
 
 ---
@@ -116,18 +158,19 @@ SVISION_CORE/
 | :--- | :--- | :---: |
 | 📚 **Master Map of Content** | Primary Obsidian Hub & Codebase Directory Map | [Explore Hub](svision_moc.md) |
 | 🏛️ **System Architecture** | Tripartite Model (Rust Shell + Python Engine + Go Gatekeeper) | [View Architecture](architecture_overview.md) |
-| ⚡ **GPU Inference Pipeline** | TensorRT FP16, CUDA Batch Consumer & Model Gearbox | [View GPU Pipeline](gpu_pipeline.md) |
-| 👁️ **Computer Vision Subsystem** | NVDEC RTSP Ingestion, ByteTrack, Kalman & Homography | [View Vision Guide](vision_subsystem.md) |
-| 🔄 **Camera Lifecycle & SCS** | 5-Stage Onboarding, Staggered Calibration & DBSCAN | [View Lifecycle](camera_lifecycle.md) |
-| 🔌 **Zero-Port IPC (STDIO)** | High-Throughput OS Pipes, JSON-ND & Zero Open Ports | [View IPC Guide](ipc_architecture.md) |
-| 🌐 **Go Synapse Dispatcher** | Dynamic TCP Multiplexing & High-Performance UDS Server | [View Go Dispatcher](synapse_dispatcher_go.md) |
-| 📤 **Data Egress & RAM Buffer** | 1 Hz MicroBatcher, Schema v2.0 & Volatile Fallback | [View Data Egress](data_egress.md) |
-| 🖥️ **Desktop UI (Tauri v2)** | Tauri v2 + React 19, ECharts Visualizations & Local State | [View UI Guide](desktop_ui_tauri.md) |
-| 🔒 **Security & LGPD Compliance**| Edge Sovereignty, Zero Video Egress & Traceback Scrubbing | [View Security](security_lgpd.md) |
-| 📡 **API and IPC Reference** | STDIN Command Catalog, Outbound Events & Wire Specs | [View API Reference](api_and_ipc_reference.md) |
-| ⚙️ **Configuration Reference** | Settings Hierarchy, INI Overrides & SQLite Delta Schema | [View Config Guide](configuration_reference.md) |
-| 🧪 **Development & Testing** | Pytest, Vitest, Go Benchmarks & TensorRT Engine Builds | [View Testing](development_testing.md) |
-| 🚀 **Deployment & Operations** | Linux Systemd Units, Multi-Stage Docker & Jetson HW | [View Deployment](deployment_operations.md) |
+| 🛡️ **F.E.N.I.X. Supervisor** | Out-of-Process Crash Recovery, Anti-Loop Backoff & VRAM Purge | [View F.E.N.I.X.](fenix_supervisor.md) |
+| ⚡ **GPU Inference Pipeline** | 12 FPS SliceScheduler, ElasticGovernor, Triton/TensorRT & Gearbox | [View GPU Pipeline](gpu_pipeline.md) |
+| 👁️ **Computer Vision Subsystem** | Threaded NVDEC, 2D Kalman ByteTrack, Homography & Wavelet OCC | [View Vision Guide](vision_subsystem.md) |
+| 🔄 **Camera Lifecycle & SCS** | Automated Onboarding, Live-Frame SCS Convergence & Node-Level Mode | [View Lifecycle](camera_lifecycle.md) |
+| 🔌 **Zero-Port IPC (STDIO)** | High-Throughput OS Pipes, JSON-ND, SQLite Hydration & Zero Open Ports | [View IPC Guide](ipc_architecture.md) |
+| 🌐 **Go Synapse Dispatcher** | Zero-Backlog TCP Multiplexing & High-Performance UDS Server | [View Go Dispatcher](synapse_dispatcher_go.md) |
+| 📤 **Data Egress & MicroBatcher** | FluidFlowEstimator, 1 Hz Circular-Mean MicroBatcher & Continuum JSON | [View Data Egress](data_egress.md) |
+| 🖥️ **Desktop UI (Tauri v2)** | Tauri v2 + React 19, Calibration Modal, Demo Mode & ECharts | [View UI Guide](desktop_ui_tauri.md) |
+| 🔒 **Security & LGPD Compliance**| Local Sovereignty, Zero Video Egress & Traceback Scrubbing | [View Security](security_lgpd.md) |
+| 📡 **API and IPC Reference** | 8 STDIN Commands, Outbound Events, Go UDS & FastAPI Wire Specs | [View API Reference](api_and_ipc_reference.md) |
+| ⚙️ **Configuration Reference** | Settings Hierarchy, INI Overrides & SQLite State Repository | [View Config Guide](configuration_reference.md) |
+| 🧪 **Development & Testing** | 23 Pytest, 5 Vitest, 5 Go Suites, Ruff, Playwright & TensorRT Builds | [View Testing](development_testing.md) |
+| 🚀 **Workstation Deployment & Operations** | Linux Systemd Units, F.E.N.I.X. Supervision, Docker & Workstation HW | [View Deployment](deployment_operations.md) |
 
 ---
 
@@ -135,27 +178,31 @@ SVISION_CORE/
 
 ```mermaid
 flowchart TD
+    subgraph Supervisor["F.E.N.I.X. Guardian (Optional --supervisor)"]
+        Fenix["FenixSupervisor + WindowedCrashRecoveryPolicy + VisionStateReconciler"]
+    end
+
     subgraph Host["Desktop Presentation Host (Rust / Tauri v2)"]
-        UI["React 19 Dashboard + ECharts"]
+        UI["React 19 Dashboard + ECharts (Demo Mode supported)"]
         Tauri["Tauri v2 Native Host (Rust / WebKitGTK)"]
         UI <-->|IPC Events & Commands| Tauri
     end
 
-    subgraph Core["Edge AI Engine (Python 3.12 / CUDA)"]
-        STDIO["StdioDaemon (Zero-Port OS Pipes)"]
-        Batch["CUDA Batch Consumer (YOLO 11 TRT FP16)"]
-        Tracker["ByteTrack + Kalman + Kornia"]
-        ASC["ASC Traffic Analyzer (SCS + DBSCAN)"]
-        Egress["SynapseEmitter (1 Hz Schema v2.0)"]
-        
+    subgraph Core["Workstation AI Engine (Python 3.12 / CUDA)"]
+        STDIO["StdioDaemon (Zero-Port OS Pipes + SQLite Hydration)"]
+        Slice["12 FPS SliceScheduler + ElasticGovernor + TritonInt8Engine"]
+        Tracker["2D Kalman ByteTrack + Kornia + AutoLaneMapper Homography"]
+        Fluid["FluidFlowEstimator (v, ρ, θ)"]
+        Egress["SynapseEmitter + FireForgetBatcher (1 Hz Continuum)"]
+
         STDIO <-->|OS Pipes STDIN/STDOUT| Tauri
-        STDIO --> Batch
-        Batch --> Tracker --> ASC --> Egress
+        STDIO --> Slice
+        Slice --> Tracker --> Fluid --> Egress
     end
 
     subgraph Gatekeeper["Network Gatekeeper (Go 1.22+)"]
-        GoDisp["Go Synapse Dispatcher"]
-        PortMgr["Port Manager (TCP Stream Multiplexer)"]
+        GoDisp["Go Synapse Dispatcher (UDSServer)"]
+        PortMgr["PortManager + Zero-Backlog CameraStreams"]
         GoDisp --> PortMgr
     end
 
@@ -163,8 +210,9 @@ flowchart TD
         SynapseCore["Central Synapse Cluster"]
     end
 
+    Fenix -.->|Watchdog & VRAM Purge| STDIO
     Egress <-->|UDS /tmp/svision_synapse.sock (0o600)| GoDisp
-    PortMgr -->|Dedicated Outbound TLS/TCP Streams| SynapseCore
+    PortMgr -->|Dedicated Outbound TCP Streams| SynapseCore
 ```
 
 ---
@@ -173,7 +221,7 @@ flowchart TD
 
 Use these tags within Obsidian to navigate notes and query relationships:
 
-- `#svision/architecture`: [Architecture Overview](architecture_overview.md), [Zero-Port IPC](ipc_architecture.md)
+- `#svision/architecture`: [Architecture Overview](architecture_overview.md), [F.E.N.I.X. Supervisor](fenix_supervisor.md), [Zero-Port IPC](ipc_architecture.md)
 - `#svision/gpu`: [GPU Pipeline](gpu_pipeline.md), [Vision Subsystem](vision_subsystem.md)
 - `#svision/network`: [Go Dispatcher](synapse_dispatcher_go.md), [Data Egress](data_egress.md)
 - `#svision/ui`: [Desktop UI](desktop_ui_tauri.md), [API & IPC Reference](api_and_ipc_reference.md)
@@ -185,6 +233,6 @@ Use these tags within Obsidian to navigate notes and query relationships:
 <div align="center">
   <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
   <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
+  <i>Sovereign Workstation Vision Engineering • SVISION v1.2.0</i><br/>
+  <small>© 2026 Noxfort Systems • SPDX-License-Identifier: AGPL-3.0-or-later</small>
 </div>

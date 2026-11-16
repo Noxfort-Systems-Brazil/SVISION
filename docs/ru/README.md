@@ -1,47 +1,32 @@
-<div align="center">
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
+# SVISION Core — Портал документации (Русский)
 
-# SVISION — Комплект технической документации
-### Synapse Vision — Архитектура Edge AI, компьютерное зрение и протокол IPC Zero-Port
-*Noxfort Systems — A State Of Art Company*
+> **Язык / Language:** [English (Полная)](../en/README.md) · [Português (Полная)](../pt-br/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · **Русский** · [中文](../zh/README.md)
 
-[![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat&logo=github)](https://github.com/Noxfort-Systems-Brazil/SVISION)
-[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat&logo=python&logoColor=white)](https://python.org/)
-[![Tauri](https://img.shields.io/badge/Tauri-2.0%2B-FFC131?style=flat&logo=tauri&logoColor=black)](https://tauri.app/)
-[![React](https://img.shields.io/badge/React-19.2-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
-[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![TensorRT](https://img.shields.io/badge/TensorRT-10.x-76B900?style=flat&logo=nvidia&logoColor=white)](https://developer.nvidia.com/tensorrt)
+**SVISION Core v1.2.0** — распределённая платформа анализа дорожного трафика в реальном времени, объединяющая **Tauri v2 / React 18**, GPU-инференс на **Python 3.12 (TensorRT INT8 + супервизор F.E.N.I.X.)** и сетевой sidecar **Zero-Backlog на Go (`bin/synapse-dispatcher`)**.
 
 ---
 
-🌐 **Языки / Translations:** **[🇺🇸 English](../en/README.md)** • **[🇧🇷 Português](../pt-br/README.md)** • **[🇪🇸 Español](../es/README.md)** • **[🇫🇷 Français](../fr/README.md)** • **[🇷🇺 Русский](README.md)** • **[🇨🇳 简体中文](../zh/README.md)** • **[📚 Главный портал](../index.md)**
+## Локальные разделы и полная техническая документация
+
+- [Обзор архитектуры (Русский)](architecture_overview.md)
+- [Главный индекс репозитория (EN)](../en/svision_moc.md)
+- [Супервизор отказоустойчивости F.E.N.I.X. (EN)](../en/fenix_supervisor.md)
+- [GPU-конвейер 12 FPS и динамические передачи (EN)](../en/gpu_pipeline.md)
+- [Подсистема компьютерного зрения и гомография (EN)](../en/vision_subsystem.md)
+- [Жизненный цикл камер и калибровка (EN)](../en/camera_lifecycle.md)
+- [Архитектура IPC STDIN/STDOUT и UDS (EN)](../en/ipc_architecture.md)
+- [Диспетчер Synapse на Go (EN)](../en/synapse_dispatcher_go.md)
+- [Потоковая передача Zero-Backlog и FluidFlowEstimator (EN)](../en/data_egress.md)
+- [Настольный интерфейс Tauri / React и Demo Mode (EN)](../en/desktop_ui_tauri.md)
+- [Безопасность, приватность и соответствие LGPD (EN)](../en/security_lgpd.md)
+- [Справочник API и контрактов IPC (EN)](../en/api_and_ipc_reference.md)
+- [Справочник конфигурации и SQLite (EN)](../en/configuration_reference.md)
+- [Разработка, компиляция INT8 и тестирование (EN)](../en/development_testing.md)
+- [Развёртывание, контейнеры и эксплуатация (EN)](../en/deployment_operations.md)
 
 ---
 
-</div>
-
-## Добро пожаловать в официальную документацию
-
-Этот каталог содержит техническую документацию на **русском языке** для **SVISION** — суверенной платформы периферийного искусственного интеллекта (*Sovereign Edge AI*) для анализа городского трафика в реальном времени и автономного адаптивного управления светофорными объектами.
-
-## Каталог технических руководств
-
-| Документ | Область | Описание |
-|---|---|---|
-| 📚 **[Центральный каталог (MOC)](../en/svision_moc.md)** | Главный индекс и граф | Обзор репозитория, структура каталогов и двусторонняя навигация в Obsidian. |
-| 🏗️ **[Архитектура системы](../en/architecture_overview.md)** | Базовая архитектура | Трехчастная модель: нативная оболочка Tauri v2 (Rust), ядро Python/CUDA и сетевой шлюз на Go. |
-| ⚡ **[GPU пайплайн инференса](../en/gpu_pipeline.md)** | Ускорение TensorRT | Централизованный батчинг на CUDA, переключение моделей YOLO 11 и нейросетевой кроп ROI. |
-| 👁️ **[Подсистема компьютерного зрения](../en/vision_subsystem.md)** | Захват и трекинг | Аппаратное декодирование NVDEC, кинематический трекер ByteTrack и расчет скорости. |
-| 🔌 **[Архитектура IPC Zero-Port](../en/ipc_architecture.md)** | Межпроцессное взаимодействие | Каналы ОС (`STDIN`/`STDOUT`) с сериализацией JSON-ND без открытых сетевых портов. |
-| 🌐 **[Диспетчер Go Synapse](../en/synapse_dispatcher_go.md)** | Сетевой шлюз | Локальный Unix Domain Socket (UDS 0o600) и TCP-мультиплексор для связи с Synapse Core. |
-| 🔒 **[Безопасность и LGPD](../en/security_lgpd.md)** | Суверенитет данных | 100% локальная обработка, отсутствие передачи видеокадров и санитарная обработка трейсбеков. |
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Инженерия суверенного периферийного зрения • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Лицензировано под AGPLv3.</small>
-</div>
+*Документация SVISION Core — v1.2.0 (2026-11-16)*

@@ -21,7 +21,7 @@ A clear and concise description of what you expected to happen.
 
 **Environment (please complete the following information):**
  - OS: [e.g. Ubuntu 22.04 LTS / 24.04 LTS]
- - GPU: [e.g. NVIDIA RTX 4090 / Jetson Orin]
+ - GPU: [e.g. NVIDIA RTX 4090 / RTX 3080 / RTX A6000]
  - CUDA Version: [e.g. 12.2]
  - TensorRT Version: [e.g. 10.0]
  - Python Version: [e.g. 3.12.3]

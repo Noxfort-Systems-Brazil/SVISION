@@ -2,6 +2,9 @@
  * SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
  * Copyright (C) 2026 Noxfort Systems
  *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 Noxfort Systems
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
  * published by the Free Software Foundation, either version 3 of the
@@ -23,7 +26,7 @@
  * All stateful logic has been extracted to dedicated hooks and components.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CamerasTab } from '../views/CamerasTab';
 import { SVisionTab } from '../views/SVisionTab';
 import { SynapseTab } from '../views/SynapseTab';
@@ -32,6 +35,7 @@ import { Sidebar } from '../components/Sidebar';
 import { BackendErrorBanner } from '../components/BackendErrorBanner';
 import { useConnectionStatus } from '../hooks/useConnectionStatus';
 import { useTranslation } from '../contexts/LanguageContext';
+import { ipcClient } from '../services/ipc_client';
 
 // Providers
 import { ThemeProvider } from '../contexts/ThemeContext';
@@ -53,8 +57,14 @@ const STATUS_CONFIG = {
 
 function AppContent() {
     const [activeTab, setActiveTab] = useState('sensors');
+    const [isDemoMode, setIsDemoMode] = useState(ipcClient.isDemo);
     const connectionStatus = useConnectionStatus();
     const { t } = useTranslation();
+
+    useEffect(() => {
+        setIsDemoMode(ipcClient.isDemo);
+        return ipcClient.subscribe('demo_mode', (val) => setIsDemoMode(Boolean(val)));
+    }, []);
 
     const cs = STATUS_CONFIG[connectionStatus] || STATUS_CONFIG.offline;
     const statusLabel = cs.labelKey ? t(cs.labelKey) : cs.label;
@@ -74,6 +84,11 @@ function AppContent() {
                         </span>
                     </div>
                     <div className="ml-auto flex items-center gap-4">
+                        {isDemoMode && (
+                            <span className="text-[11px] font-mono px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                                Modo Demonstração (Simulado)
+                            </span>
+                        )}
                         <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground bg-card px-3 py-1.5 rounded-md border border-border">
                             <span className={`w-1.5 h-1.5 rounded-full ${cs.color} ${cs.animate}`}></span>
                             {statusLabel}

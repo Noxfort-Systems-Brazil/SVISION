@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -28,7 +31,7 @@ version = "1.0.0"
 description = "Synapse Vision (SVISION) — Edge AI Traffic Analytics Engine"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "AGPL-3.0-or-later" }
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "Gabriel Moraes" }
 ]

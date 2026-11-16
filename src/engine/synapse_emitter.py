@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -95,9 +98,8 @@ class SynapseEmitter:
         if not self._state_mgr.is_camera_production(self._cam_id):
             return None
 
-        # ── Build unified payload ────────────────────────────────────
+        # ── Build fluid payload ──────────────────────────────────────
         is_heartbeat = not self._batcher.has_events(self._cam_id) and force_heartbeat
-        traffic_data = self._batcher.flush(self._cam_id)
         hw_snapshot = self._hw_telemetry.sample_hardware()
 
         # Look up custom sensor_id configured for this camera
@@ -106,34 +108,64 @@ class SynapseEmitter:
         if isinstance(cam_meta, dict) and cam_meta.get("sensor_id"):
             sensor_id = cam_meta["sensor_id"]
 
-        payload = self._synapse.build_unified_payload(
-            camera_id=sensor_id,
-            traffic_data=traffic_data,
-            hw_snapshot=hw_snapshot,
-            is_heartbeat=is_heartbeat,
-            fps=avg_fps,
-            active_gear=self._gearbox.current_gear,
+        is_calibrated = bool(
+            hasattr(self._state_mgr, "get_homography")
+            and self._state_mgr.get_homography(self._cam_id) is not None
         )
 
-        # ── Fire-and-forget dispatch (300ms timeout) ─────────────────
-        asyncio.create_task(self._synapse.dispatch(payload))
+        if hasattr(self._batcher, "flush_fluid") and hasattr(self._synapse, "build_fluid_payload"):
+            channels = self._batcher.flush_fluid(self._cam_id)
+            payload = self._synapse.build_fluid_payload(
+                camera_id=sensor_id,
+                channels=channels,
+                is_heartbeat=is_heartbeat,
+            )
+            if isinstance(payload, dict):
+                payload["calibrated"] = is_calibrated
+            # Also flush legacy batcher for backward compatibility
+            traffic_data = self._batcher.flush(self._cam_id)
+        else:
+            traffic_data = self._batcher.flush(self._cam_id)
+            payload = self._synapse.build_unified_payload(
+                camera_id=sensor_id,
+                traffic_data=traffic_data,
+                hw_snapshot=hw_snapshot,
+                is_heartbeat=is_heartbeat,
+                fps=avg_fps,
+                active_gear=self._gearbox.current_gear if self._gearbox else "Nano",
+            )
+
+        # ── Fire-and-forget dispatch using internal cam_id for Go UDS routing ──
+        asyncio.create_task(self._synapse.dispatch(payload, camera_id=self._cam_id))
 
         # ── Update dashboard ─────────────────────────────────────────
+        gear_name = self._gearbox.current_gear if self._gearbox else "Nano"
+        live_stats = {"active_gear": gear_name, "synapse": payload}
         if frame_count > config.PIPELINE_FPS_MIN_FRAMES:
             self._state_mgr.update_engine_stats(
                 fps_average=avg_fps,
-                active_gear=self._gearbox.current_gear
+                active_gear=gear_name
             )
-            stats = {"fps": avg_fps, "active_gear": self._gearbox.current_gear}
-            stats["synapse"] = payload
-            self._state_mgr.update_camera_live_stats(self._cam_id, **stats)
+            live_stats["fps"] = avg_fps
+        self._state_mgr.update_camera_live_stats(self._cam_id, **live_stats)
+
+        if (
+            not is_heartbeat
+            and hasattr(self._state_mgr, "record_traffic_sample")
+            and isinstance(payload, dict)
+            and payload.get("channels")
+        ):
+            ch_list = payload["channels"]
+            avg_density = sum(float(c.get("density", 0.0)) for c in ch_list) / len(ch_list)
+            avg_speed = sum(float(c.get("speed", 0.0)) for c in ch_list) / len(ch_list)
+            self._state_mgr.record_traffic_sample(self._cam_id, avg_density, avg_speed)
 
         hb_marker = " [HEARTBEAT]" if is_heartbeat else ""
-        total_count = sum(d.get("count", 0) for d in traffic_data.values())
+        channels_count = len(payload.get("channels", []))
         logger.info(
-            f"[{self._cam_id}] SYNAPSE{hb_marker} [{self._gearbox.current_gear}|"
-            f"det={len(detections)}|count={total_count}|"
-            f"edges={len(traffic_data)}]"
+            f"[{self._cam_id}] SYNAPSE FLUID{hb_marker} [{gear_name}|"
+            f"det={len(detections)}|channels={channels_count}]"
         )
 
         return payload
+

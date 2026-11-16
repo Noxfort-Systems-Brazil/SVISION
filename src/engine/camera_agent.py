@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -69,6 +72,7 @@ class CameraAgent:
         grabber: Any = None,
         counter: Any = None,
         emitter: Any = None,
+        fluid_estimator: Any = None,
     ):
         self.cam_id = cam_id
         self._state_mgr = state_mgr
@@ -79,6 +83,8 @@ class CameraAgent:
         # Runtime state
         self._has_recent_motion: bool = False
         self._last_tick_time: float = time.time()
+        self._prev_process_ts: Optional[float] = None
+        self._last_frame_shape: Tuple[int, int] = (720, 1280)
         self._frame_count: int = 0
 
         # FPS metrics tracking
@@ -86,9 +92,11 @@ class CameraAgent:
         self._fps_history: List[float] = [30.0] * self._fps_window
 
         # Dependency Inversion: accept pre-built modules or compose standard defaults
-        if grabber is not None and counter is not None and emitter is not None:
+        estimator = fluid_estimator if fluid_estimator is not None else counter
+        if grabber is not None and estimator is not None and emitter is not None:
             self._grabber = grabber
-            self._counter = counter
+            self._fluid_estimator = estimator
+            self._counter = estimator
             self._emitter = emitter
         else:
             self._init_default_submodules(
@@ -120,7 +128,7 @@ class CameraAgent:
     ):
         """Composes default submodules with lazy imports to avoid early CUDA initialization."""
         from src.engine.frame_grabber import FrameGrabber
-        from src.engine.trigger_counter import TriggerCounter
+        from src.engine.fluid_flow_estimator import FluidFlowEstimator
         from src.engine.synapse_emitter import SynapseEmitter
         from src.api.hardware_telemetry import hardware_telemetry
 
@@ -131,13 +139,15 @@ class CameraAgent:
             auditor=auditor,
             worker_pool=worker_pool,
         )
-        self._counter = TriggerCounter(
+        self._fluid_estimator = FluidFlowEstimator(
             self.cam_id,
             tracker=tracker_engine,
             lane_mapper=lane_mapper_inst,
             batcher=batcher,
             state_mgr=state_mgr,
         )
+        # Compatibility alias
+        self._counter = self._fluid_estimator
         self._emitter = SynapseEmitter(
             self.cam_id,
             batcher=batcher,
@@ -154,6 +164,13 @@ class CameraAgent:
         """Indicates whether this camera detected motion in the most recent grab cycle."""
         return self._has_recent_motion
 
+    @property
+    def active_gear(self) -> str:
+        """Returns the current YOLO gear requested by this camera's ModelGearbox."""
+        if self._gearbox and hasattr(self._gearbox, "current_gear"):
+            return self._gearbox.current_gear
+        return "Nano"
+
     async def grab_and_extract_rois(self) -> Optional[Tuple[Any, List[dict], str]]:
         """
         Stage 1 of the SliceScheduler cycle:
@@ -169,6 +186,9 @@ class CameraAgent:
         if frame is None:
             self._has_recent_motion = False
             return None
+
+        if hasattr(frame, "shape") and len(frame.shape) >= 2:
+            self._last_frame_shape = (int(frame.shape[0]), int(frame.shape[1]))
 
         # Extract motion ROIs on worker pool to keep asyncio loop non-blocking
         if self._worker_pool is not None and self._inferencer is not None:
@@ -187,17 +207,38 @@ class CameraAgent:
         self._has_recent_motion = any(r.get("has_motion", False) for r in rois)
         return frame, rois, self.cam_id
 
-    def post_inference_process(self, detections: list):
+    def post_inference_process(self, detections: list, gear_ceiling: Optional[str] = None):
         """
         Stage 4 of the SliceScheduler cycle:
-        Updates trigger-line counters, evaluates model gearbox, and fires egress emissions.
+        Estimates fluid dynamics with real delta-t and frame dimensions, evaluates model gearbox,
+        and fires egress emissions.
         """
-        # Trigger-line vehicle counting
-        if self._counter:
-            self._counter.process(detections)
+        now = time.time()
+        dt_seconds = (
+            max(0.005, min(2.0, now - self._prev_process_ts))
+            if self._prev_process_ts is not None
+            else config.PIPELINE_BASE_INTERVAL
+        )
+        self._prev_process_ts = now
 
-        # Dynamic model gearbox evaluation
-        self._update_gearbox(len(detections))
+        # Fluid flow continuous estimation (LWR v, rho, theta)
+        if self._fluid_estimator:
+            try:
+                self._fluid_estimator.process(
+                    detections,
+                    frame_shape=self._last_frame_shape,
+                    has_motion=self._has_recent_motion,
+                    dt_seconds=dt_seconds,
+                )
+            except TypeError:
+                self._fluid_estimator.process(
+                    detections,
+                    frame_shape=self._last_frame_shape,
+                    has_motion=self._has_recent_motion,
+                )
+
+        # Dynamic model gearbox evaluation with VRAM ceiling
+        self._update_gearbox(len(detections), gear_ceiling=gear_ceiling)
 
         # Real-time FPS metrics update and fire-and-forget telemetry emission
         avg_fps = self._update_fps_stats(self._last_tick_time)
@@ -223,8 +264,12 @@ class CameraAgent:
             frame = await self._grabber.grab()
             detections = await self._grabber.infer(frame) if frame is not None else []
 
-            if self._counter:
-                self._counter.process(detections)
+            if self._fluid_estimator:
+                self._fluid_estimator.process(
+                    detections,
+                    frame_shape=(720, 1280),
+                    has_motion=self._has_recent_motion
+                )
 
             self._update_gearbox(len(detections))
             await self._pace_loop()
@@ -245,19 +290,20 @@ class CameraAgent:
         cam = next((c for c in cameras if c.get("id") == self.cam_id), None)
         return cam is not None
 
-    def _update_gearbox(self, detection_count: int):
+    def _update_gearbox(self, detection_count: int, gear_ceiling: Optional[str] = None):
         """Evaluates dynamic model gears and persists shift operations."""
         if not self._gearbox:
             return
-        result = self._gearbox.evaluate_scene(detection_count)
+        result = self._gearbox.evaluate_scene(detection_count, gear_ceiling=gear_ceiling)
         if result.shifted:
             if self._inferencer:
                 self._inferencer.active_gear = result.gear_name
             if self._state_mgr:
+                self._state_mgr.update_camera_live_stats(self.cam_id, active_gear=result.gear_name)
                 self._state_mgr.update_engine_stats(active_gear=result.gear_name)
                 self._state_mgr.append_recent_operation({
                     "id": f"#GB-{id(self._gearbox) % 9999}",
-                    "name": f"Gearshift: {result.old_gear} → {result.gear_name}",
+                    "name": f"[{self.cam_id}] {result.old_gear} → {result.gear_name}",
                     "status": "Completed",
                 })
 

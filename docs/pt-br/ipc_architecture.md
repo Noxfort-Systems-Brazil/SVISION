@@ -1,81 +1,77 @@
----
-tags: [svision, ipc, tauri, rust, python, stdio, zero-port, brasil]
-aliases: [Arquitetura IPC, IPC Zero-Port, Ponte STDIO]
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<div align="center">
+# Arquitetura IPC e Comunicação Entre Processos
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
-
-# Arquitetura IPC Zero-Port (Pipes STDIO)
-### Ponte de Comunicação Interprocessos de Alta Performance entre Rust e Python
-*Noxfort Systems — A State Of Art Company*
-
-</div>
-
-⬅️ Voltar para a [Central Master MOC](svision_moc.md) | 🏛️ Ver [Arquitetura](architecture_overview.md) | 🖥️ Ver [Interface Desktop](desktop_ui_tauri.md) | 📡 Ver [Referência de API](api_and_ipc_reference.md)
+O SVISION Core conecta seus três planos de execução por meio de mensagens **NDJSON via STDIN/STDOUT** (entre Tauri/Rust e Python/F.E.N.I.X.) e **Unix Domain Socket (UDS)** (entre Python e o sidecar Go `bin/synapse-dispatcher`), além de um servidor HTTP/WebSocket opcional em `src/api/` (`:8000`).
 
 ---
 
-## 1. Visão Geral
+## 1. Topologia de Comunicação
 
-O **SVISION** adota a arquitetura de comunicação interprocessos **Standard I/O (STDIO) Zero-Port**, conectando nativamente o shell desktop em **Tauri v2** (Rust + WebKitGTK) com o motor cognitivo em **Python 3.12**.
-
-Esta arquitetura elimina completamente portas TCP de rede abertas, alertas intrusivos de firewall, conflitos de portas ocupadas e arquivos de socket temporários órfãos em `/tmp`.
-
-```text
-┌───────────────────────────────────────┐       ┌───────────────────────────────────────┐
-│              Tauri v2                 │       │            Núcleo Python              │
-│            (Host Rust)                │       │          (Daemon Headless)            │
-│                                       │       │                                       │
-│  ┌─────────────────────────────────┐  │ STDIN │  ┌─────────────────────────────────┐  │
-│  │ send_svision_command (Comando)  │───►───┼──│ StdioTransport (Thread Leitora)    │  │
-│  │ Linhas JSON: {action, id, data} │ (pipe) │  │ IpcCommandRouter                 │  │
-│  └─────────────────────────────────┘  │       │  └─────────────────────────────────┘  │
-│                                       │       │                                       │
-│  ┌─────────────────────────────────┐  │ STDOUT│  ┌─────────────────────────────────┐  │
-│  │ spawn_stdout_listener (Thread)   │───◄───┼──│ StdioTransport (write_line)       │  │
-│  │ Linhas JSON: {type: evento/resp}│ (pipe) │  │ Loop de Telemetria & Transmissores │  │
-│  └──────────────────┬──────────────┘  │       │  └─────────────────────────────────┘  │
-│                     │                 │       │                                       │
-│                     ▼ emit('svision:*')       │  ┌─────────────────────────────────┐  │
-│  ┌─────────────────────────────────┐  │ STDERR│  │ Saída de Logs                   │  │
-│  │ Frontend React (WebView)        │  │ (cru) │  │ StreamHandler(sys.stderr)       │──┼──► Terminal de Dev
-│  │ ipcClient.subscribe / comando   │  │       │  └─────────────────────────────────┘  │
-│  └─────────────────────────────────┘  │       │                                       │
-└───────────────────────────────────────┘       └───────────────────────────────────────┘
+```mermaid
+flowchart LR
+    UI["Workstation React 18<br/>ui/services/ipc_client.js"] <-->|"Tauri invoke & eventos"| RUST["Host Nativo Tauri (Rust)<br/>src-tauri/src/backend/ipc.rs"]
+    RUST <-->|"NDJSON STDIN / STDOUT<br/>Com ou sem F.E.N.I.X. Supervisor"| PY["Daemon Python (StdioDaemon)<br/>src/ipc/stdio_daemon.py"]
+    PY <-->|"UDS (/tmp/svision_synapse.sock, 0600)<br/>ATTACH / DETACH / DATA / UPDATE_CONFIG / PING"| GO["Go Synapse Dispatcher<br/>bin/synapse-dispatcher"]
+    GO -->|"Streams TCP NDJSON<br/>Portas 9001+"| SYN["Nós Synapse"]
+    PY -.->|"API FastAPI / WS opcional<br/>Token 64-hex (:8000)"| API["src/api/core_server.py"]
 ```
 
 ---
 
-## 2. Propriedades e Vantagens Principais
+## 2. Ponte STDIN / STDOUT NDJSON (Rust ↔ Python)
 
-| Propriedade | Valor | Justificativa Técnica |
-|---|---|---|
-| **Camada de Transporte** | Pipes do SO (`STDIN` / `STDOUT`) | Zero portas expostas na máquina, sem necessidade de regras de firewall |
-| **Enquadramento** | Linhas JSON delimitadas por `\n` | Baixo overhead de serialização, determinístico e auditável |
-| **Isolamento de Logs** | Canal `STDERR` dedicado | Logs de depuração nunca poluem o fluxo de dados do `STDOUT` |
-| **Ciclo de Vida** | Amarração Pai-Filho no SO | Ao fechar a janela do Tauri, o sinal `EOF` no `STDIN` encerra o Python de forma limpa |
-| **Segurança** | Permissões internas de processo | Inacessível via LAN ou agentes externos na máquina |
+- **Lado Rust (`src-tauri/src/backend/`):** `ipc.rs`, `mod.rs` e `state.rs` gerenciam o processo filho Python e expõem `send_svision_command` e `get_backend_status` à interface React.
+- **Lado Python (`src/ipc/stdio_daemon.py` & `stdio_transport.py`):**
+  - **Hidratação no Boot:** `StdioDaemon.main()` acopla o `SQLiteStateRepository` (`state_manager.attach_persistence(..., load_existing=True)`) e executa `_hydrate_persisted_cameras()` para reconectar câmeras salvas ao `NvdecStreamDecoder`, `SynapseUDSClient` e `SCSOrchestrator`.
+  - **Transporte Sincronizado:** `StdoutTransport` serializa mensagens JSON por linha com bloqueio de thread para evitar intercalação de bytes.
+  - **Encerramento Limpo (`shutdown()`):** Interrompe o `PipelineOrchestrator`, fecha o `SynapseUDSClient`, chama `stream_decoder.disconnect_all()`, esvazia a memória CUDA e finaliza o binário `synapse-dispatcher`.
 
 ---
 
-## 3. Fluxo de Execução de Comandos e Respostas
+## 3. Roteamento de Comandos (`src/ipc/command_handlers.py`)
 
-Quando o operador executa uma ação na interface desktop (ex: adicionar uma nova câmera ou alterar a sensibilidade de calibração):
-
-1. **Frontend**: Invoca `ipcClient.sendCommand('camera:add', { ... })`.
-2. **Host Rust**: Serializa o comando em uma linha JSON e escreve diretamente no pipe `STDIN` do processo filho Python.
-3. **Python `StdioTransport`**: Uma thread de leitura dedicada captura a linha, deserializa o JSON e despacha para o `IpcCommandRouter`.
-4. **Execução**: O roteador processa a ação de forma assíncrona com tratamento de exceções blindado.
-5. **Retorno**: A resposta `{ id, type: 'response', success: true, ... }` é escrita no `STDOUT` com flush atômico imediato.
-6. **Despacho na UI**: A thread listener do Rust emite o evento para o React, atualizando os componentes instantaneamente.
+| Comando (`cmd`) | Função |
+| :--- | :--- |
+| `ping` | Verifica responsividade do daemon (`pong`). |
+| `sync_state` | Retorna estado completo (`cameras`, `engine_stats`, `network_stats`, `synapse_ports`, `synapse_host`, `homography_matrices`, `camera_params`). |
+| `add_camera` | Registra sensor no SQLite, reserva porta TCP via UDS, inicia captura e enfileira calibração SCS. |
+| `remove_camera` | Cancela calibração, apaga registro do SQLite, para decodificação e envia `DETACH_CAMERA`. |
+| `set_cameras` | Sincronização em lote da lista de câmeras. |
+| `update_synapse_config` | Atualiza `synapse_host`, grava em `settings.ini` e propaga `UPDATE_CONFIG` ao Go. |
+| `set_homography` | Grava matriz `3x3` ou calcula via `>= 4` pares `image_points`/`world_points` no `AutoLaneMapper`. |
+| `update_camera_params` | Atualiza `confidence_threshold` / `nms_threshold` (clamped em `[0.05, 0.99]`), `nominal_direction` e `approach` no SQLite e em memória. |
 
 ---
 
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Engenharia de Visão de Borda Soberana • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licenciado sob AGPLv3.</small>
-</div>
+## 4. Eventos Assíncronos de Telemetria (`src/ipc/telemetry_broadcaster.py`)
+
+O `TelemetryBroadcaster` publica eventos periódicos em STDOUT no intervalo `SVISION_TELEMETRY_INTERVAL` (padrão `1.0s`):
+- **`ready`**: Boot e hidratação concluídos.
+- **`cameras`**: Lista de câmeras com status, FPS, marcha, porta Synapse, matriz de homografia e `tuning_params`.
+- **`engine_stats`**: Carga GPU/CPU, uso de VRAM/RAM, temperatura, marcha ativa e métricas do `SliceScheduler`.
+- **`network_stats`**: Último payload fluido por câmera (`channels`, `calibrated`, `is_heartbeat`, contadores de rede).
+- **`synapse_ports`**: Estado atual das portas TCP no Go (`READY`, `CONNECTING`, `CONNECTED`, `DISCONNECTED`, `CLOSED`).
+- **`network_latency`**: Latência por sensor.
+- **`gpu_health_alert`**: Alertas críticos emitidos pelo `ElasticGovernor`.
+
+---
+
+## 5. Integração F.E.N.I.X. e Modo Demonstração UI
+
+- Quando iniciado via `svision.py --supervisor`, o `FenixSupervisor` encapsula o worker `--daemon --supervised`, mantendo a interface IPC estável diante de reinícios após falha.
+- Quando a UI roda sem Tauri (`npm run dev` ou `?demo=true`), `ui/services/ipc_client.js` emula todo o contrato IPC localmente, incluindo calibração de homografia e ajuste de parâmetros em tempo real.
+
+---
+
+## 6. Documentação Relacionada
+
+- [Supervisor F.E.N.I.X.](fenix_supervisor.md)
+- [Synapse Dispatcher (Go)](synapse_dispatcher_go.md)
+- [Referência de API e IPC](api_and_ipc_reference.md)
+- [UI Desktop e Tauri](desktop_ui_tauri.md)
+
+---
+
+*Documentação SVISION Core — v1.2.0 (2026-11-16)*

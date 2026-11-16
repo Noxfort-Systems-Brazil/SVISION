@@ -1,173 +1,92 @@
----
-title: "Desktop Interface — Tauri v2, Rust & React 19 Dashboard"
-tags: [svision, ui, tauri, rust, react19, vite, tailwind, echarts, architecture]
-aliases: ["Desktop UI", "Frontend", "Tauri v2 Shell", "React Dashboard"]
-updated: 2026-09-05
-category: "Desktop Interface & IPC Bridge"
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-[🏠 Home](../index.md) › **Desktop Interface (Tauri v2 + React 19)**
+# Desktop Workstation UI & Tauri Runtime
+
+SVISION Core delivers a native desktop workstation interface built on **Tauri v2 (Rust)** and **React 18 (Vite)** with **ECharts**, **Tailwind CSS**, i18n (`ui/locales/en_us.json`, `ui/locales/pt_br.json`), Demo Mode simulation, and live per-camera homography/parameter tuning.
 
 ---
 
-# Desktop Interface — Tauri v2, Rust & React 19 Dashboard
+## 1. Tauri v2 Native Host (`src-tauri/`)
 
-> SVision — Architecture Documentation  
-> Copyright © 2026 Gabriel Moraes — Noxfort Systems
+| File | Responsibility |
+| :--- | :--- |
+| [`src-tauri/tauri.conf.json`](../../src-tauri/tauri.conf.json) | Window defaults, bundle metadata, and Vite dev/build integration (`ui/`). |
+| [`src-tauri/capabilities/default.json`](../../src-tauri/capabilities/default.json) | Grants scoped `"core:default"` capability to the `main` / `*` windows (principle of least privilege). |
+| [`src-tauri/src/lib.rs`](../../src-tauri/src/lib.rs) | Initializes Tauri builder, registers `send_svision_command` and `get_backend_status` handlers, and manages window lifecycle cleanup. |
+| [`src-tauri/src/backend/mod.rs`](../../src-tauri/src/backend/mod.rs) | Coordinates backend lifecycle (`spawn`, shutdown hooks) between Tauri setup and Rust IPC threads. |
+| [`src-tauri/src/backend/ipc.rs`](../../src-tauri/src/backend/ipc.rs) | Spawns the Python daemon (`StdioDaemon` or F.E.N.I.X. supervisor), pipes commands to STDIN, and parses STDOUT NDJSON lines into Tauri events. |
+| [`src-tauri/src/backend/state.rs`](../../src-tauri/src/backend/state.rs) | Thread-safe handle holding the active child process stdin writer and liveness state. |
 
----
-
-## Overview
-
-The presentation layer of SVision is a lightweight hybrid native desktop application built on **Tauri v2** (with a high-performance **Rust** host shell) and a reactive user interface developed with **React 19**, **Vite 8**, **Tailwind CSS v4**, and dynamic analytics charts powered by **Apache ECharts**.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Tauri v2 Host (Rust)                   │
-│                                                             │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │               WebView (WebKitGTK)                   │   │
-│   │  React 19 + Tailwind v4 + ECharts Dashboard         │   │
-│   │                                                     │   │
-│   │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ │   │
-│   │  │  Workspace   │ │   Sensors    │ │   Engine     │ │   │
-│   │  │  (Real-Time) │ │  (Cameras)   │ │  (Telemetry) │ │   │
-│   │  └──────────────┘ └──────────────┘ └──────────────┘ │   │
-│   │  ┌──────────────┐ ┌──────────────┐                  │   │
-│   │  │Synapse Mesh  │ │   Settings   │                  │   │
-│   │  │  (Network)   │ │  (System)    │                  │   │
-│   │  └──────────────┘ └──────────────┘                  │   │
-│   └──────────────────────────┬──────────────────────────┘   │
-│                              │ invoke() / listen()          │
-│   ┌──────────────────────────▼──────────────────────────┐   │
-│   │          src-tauri/src/backend/ipc.rs               │   │
-│   │   Python Subprocess Manager (Stdio Subprocess)      │   │
-│   └──────────────────────────┬──────────────────────────┘   │
-└──────────────────────────────┼──────────────────────────────┘
-                               │ OS Pipes STDIN / STDOUT
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│             Python Cognitive Core (StdioDaemon)             │
-└─────────────────────────────────────────────────────────────┘
-```
+### Exposed Rust Commands
+- `send_svision_command(command: String)` — Writes an NDJSON command string directly to the child Python process STDIN.
+- `get_backend_status()` — Reports whether the sidecar Python process is running.
 
 ---
 
-## Desktop Project Structure
+## 2. React Workstation Architecture (`ui/`)
 
-The interface codebase is divided between the operating system wrapper ([`src-tauri/`](file:///home/gabriel-moraes/Documentos/SVISION_CORE/src-tauri)) and the web frontend source ([`ui/`](file:///home/gabriel-moraes/Documentos/SVISION_CORE/ui)):
+### Entry & Context
+- [`ui/core/App.jsx`](../../ui/core/App.jsx): Top-level workstation layout hosting `Sidebar`, top breadcrumb (`Workspace / <tab>`), live `"Modo Demonstração (Simulado)"` indicator when active, and active tab view.
+- [`ui/contexts/ThemeContext.jsx`](../../ui/contexts/ThemeContext.jsx): Persists `svision_theme` in `localStorage` and honors URL overrides (`?theme=light`, `?demo=true`).
+- [`ui/constants/cameraConfig.js`](../../ui/constants/cameraConfig.js): Default camera tuning presets and form bounds.
 
-```text
-SVISION_CORE/
-├── src-tauri/
-│   ├── Cargo.toml            # Rust dependencies (tauri v2, serde_json, etc.)
-│   ├── tauri.conf.json       # Window layout, capabilities, and plugin configuration
-│   ├── capabilities/         # Granular permissions for the WebView
-│   └── src/
-│       ├── lib.rs            # Tauri application bootstrapper
-│       ├── main.rs           # Binary entry point
-│       └── backend/          # Python subprocess IPC bridge
-│           ├── ipc.rs        # Invoke commands and stdout reader threads
-│           ├── mod.rs        # Subprocess management (spawn and kill_backend)
-│           └── state.rs      # Shared state in Rust
-└── ui/
-    ├── core/                 # App.jsx, main.jsx (React mounting points)
-    ├── views/                # Main dashboard view modules
-    ├── components/           # Reusable UI widgets (Sidebar, Modal, Badge)
-    ├── hooks/                # Custom React Hooks (telemetry consumption)
-    ├── services/             # ipcClient.js (Tauri IPC wrapper)
-    ├── contexts/             # Global contexts (Theme, i18n Language)
-    └── locales/              # Localization dictionaries (en_us, pt_br)
-```
+### Navigation Views (`ui/views/`)
+| View | Sidebar Key | Description |
+| :--- | :--- | :--- |
+| **`CamerasTab.jsx`** | `nav.sensors` (default) | Master-detail sensor explorer (`CameraList` + `CameraDetailPane`), live fluid flow telemetry cards, add-camera workflow, CSV import (`cameraCsvService.js`), and calibration modal. |
+| **`SVisionTab.jsx`** | `nav.engine` | Live GPU engine telemetry (`TelemetryMetricsGrid`), `SliceScheduler` / `ModelGearbox` metrics, `ResourceAllocationChart` (ECharts), and `RecentOperationsTable`. |
+| **`SynapseTab.jsx`** | `nav.network` | Synapse network configuration (`synapse_host` editor), live Go TCP port bindings (`synapse_ports`), and stream diagnostics. |
+| **`SettingsTab.jsx`** | `nav.settings` | Appearance theme toggle, language selector (`pt-BR` / `en-US`), and runtime information. |
 
----
-
-## Primary Views
-
-### 1. Workspace (`WorkspaceView.jsx`)
-- Central traffic operations command center.
-- Live video feed grid with camera metadata overlays.
-- Real-time sensor lifecycle state indicators (Calibrating, Production, Error).
-- Quick inspection modals and physical camera displacement alerts detected by PBT.
-
-### 2. Sensors & Cameras (`SensorsView.jsx`)
-- Comprehensive camera inventory table (ID, RTSP address, Approaches, Status).
-- **SCS Calibration Inspector**: Live visual progress bar monitoring MOG2/Farneback composite convergence scores ([`camera_lifecycle.md`](camera_lifecycle.md)).
-- **Bulk Import/Export**: Support for CSV batch camera provisioning.
-- Dialogs for adding, modifying, and deleting camera feeds with instant IPC sync.
-
-### 3. Machine Engine Telemetry (`EngineView.jsx`)
-- Real-time **Apache ECharts** widgets updating at 30-60 FPS:
-  - Instantaneous and historical GPU Video RAM (**VRAM**) usage.
-  - Per-camera effective inference frame rate (**FPS**).
-  - GPU core temperature and thermal throttling flags.
-  - Active YOLO 11 inference gear indicator ([Model Gearbox](gpu_pipeline.md)).
-  - Dropped frame counters and loop latency breakdown.
-
-### 4. Synapse Mesh (`NetworkView.jsx`)
-- Real-time status of persistent TCP streams supervised by the [Go Synapse Dispatcher](synapse_dispatcher_go.md).
-- Camera-to-port allocation matrix (`synapse_ports`).
-- Network round-trip latency scatter plots and packet delivery ratios.
-- Volatile RAM buffer utilization indicator ([`data_egress.md`](data_egress.md)).
-
-### 5. System Settings (`SettingsView.jsx`)
-- Live configuration of central Synapse server parameters (`SYNAPSE_HOST` and `SYNAPSE_BASE_PORT`).
-- Changes saved in the UI are persisted directly to [`settings.ini`](configuration_reference.md) and synchronized with the Go Dispatcher.
-- Language switcher (English `en_us` and Brazilian Portuguese `pt_br`).
-- High-contrast visual theme controls.
+### Key Interactive Components (`ui/components/`)
+- **`Sidebar.jsx`**: Persistent left navigation rail (`nav.sensors`, `nav.engine`, `nav.network`, `nav.settings`) and backend connection status indicator.
+- **`CameraList.jsx`**: Searchable/filterable sensor list showing operational badge (`PRODUCTION`, `SCS_CALIBRATION`, `ERROR`) and quick selection.
+- **`cameras/AddCameraModal.jsx`**: Strict client-side validation enforcing non-empty identifiers, valid source URI formats (`rtsp://`, `rtsps://`, `http://`, `https://`, `/dev/*`, device integer, or `.mp4`/`.mkv`/`.avi`), and valid TCP Synapse ports (`1024..65535`).
+- **`cameras/CameraDetailPane.jsx`** & **`cameras/CameraParametersTable.jsx`**:
+  - Features a **`SlidersHorizontal` Calibration & Parameters Modal** exposing live adjustments for `confidence_threshold`, `nms_threshold`, `nominal_direction`, `approach`, and 4+ image/world calibration point pairs (`"x,y; ..."`).
+  - Submitting triggers both `updateCameraParams(cameraId, params)` and `setHomography(cameraId, calibrationPayload)`.
+  - `CameraParametersTable.jsx` displays current `tuning_params` and switches calibration indicator between `3x3 Matrix` and `Uncalibrated`.
+- **`cameras/SynapseTelemetryGrid.jsx`**:
+  - Renders per-channel traffic flow cards (`Canal N`: speed in km/h, density %, direction in degrees °) sourced from `channels[]` while preserving legacy `traffic` map compatibility.
+  - Displays `"Homografia Calibrada"` or `"Sem Homografia (Estimativa px)"` badge reflecting live metric calibration status.
+- **`telemetry/TelemetryMetricsGrid.jsx`**, **`ResourceAllocationChart.jsx`**, **`RecentOperationsTable.jsx`**: Hardware utilization (VRAM, GPU load, temperature, slice utilization) and engine operation logs.
 
 ---
 
-## Service Layer & IPC Bridge (`ipcClient.js`)
+## 3. Custom React Hooks (`ui/hooks/`)
 
-`ipcClient` encapsulates Tauri v2 IPC invocations and event subscriptions:
-
-```javascript
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-
-// Dispatch command to Python core
-export const addCamera = async (cameraData) => {
-    return await invoke('send_svision_command', {
-        action: 'add_camera',
-        payload: cameraData,
-        id: crypto.randomUUID()
-    });
-};
-
-// Subscribe to telemetry topics emitted by the daemon
-export const subscribeToTopic = async (topic, callback) => {
-    return await listen(`svision:${topic}`, (event) => {
-        callback(event.payload);
-    });
-};
-```
-
-### Custom React Hooks
-
-React components consume telemetry cleanly without managing raw IPC event listeners:
-
-- `useCameras()`: Reactive list of configured cameras and their lifecycle states.
-- `useEngineStats()`: VRAM, GPU temperature, and FPS metrics feeding `EngineView`.
-- `useNetworkStats()`: Real-time network health metrics for the Synapse mesh.
-- `useSynapsePorts()`: Maintains dynamic TCP stream port mappings.
+| Hook | Responsibility |
+| :--- | :--- |
+| `useCameras.js` | Subscribes to `cameras` events, manages active camera selection, and reconciles updates. |
+| `useCameraOperations.js` | Wraps `add_camera`, `remove_camera`, `set_cameras`, `set_homography`, and `update_camera_params` calls. |
+| `useConnectionStatus.js` | Tracks backend IPC readiness, demo mode flag (`demo_mode`), and reconnection state. |
+| `useEngineStats.js` | Subscribes to `engine_stats` telemetry (GPU/CPU/VRAM/RAM/temperature/FPS/gear). |
+| `useNetworkLatency.js` | Subscribes to `network_latency` events for egress/inference latency tracking. |
+| `useNetworkStats.js` | Subscribes to `network_stats` events carrying live per-camera `FluidFlowEstimator` payloads. |
+| `useResourceChartOptions.js` | Builds reactive ECharts theme-aware option objects from `engine_stats` time series. |
 
 ---
 
-## Related Documents
+## 4. IPC Client, Demo Mode & Automated Recording
 
-- [🏠 Main Index / MOC](../index.md)
-- [🏗️ Architecture Overview](architecture_overview.md)
-- [🔌 Zero-Port IPC Architecture](ipc_architecture.md)
-- [📡 API & IPC Reference](api_and_ipc_reference.md)
-- [🌐 Go Synapse Dispatcher](synapse_dispatcher_go.md)
-- [⚙️ Configuration Reference](configuration_reference.md)
+### `ui/services/ipc_client.js`
+- **Tauri Runtime Path:** Uses `@tauri-apps/api/core` (`invoke("send_svision_command", ...)`) and `@tauri-apps/api/event` (`listen(...)`).
+- **Demo Mode Fallback:** Automatically activates when running in a standard browser without `window.__TAURI_INTERNALS__` (outside Vitest `NODE_ENV === 'test'`) or when `?demo=true` is passed in the URL.
+  - Simulates realistic traffic cameras, `engine_stats`, `network_stats`, `synapse_host`, and `synapse_ports`.
+  - Fully implements `setHomography(...)` and `updateCameraParams(...)` locally so interactive calibration demos work identically without a GPU daemon.
+
+### Automated Demo Recording (`record_presentation.cjs`)
+The repository includes [`record_presentation.cjs`](../../record_presentation.cjs) (`npm run record`), a Playwright + FFmpeg script that drives the workstation UI at `?demo=true&theme=light` in **Full-HD (1920x1080 @ 60 FPS)** across Sensors, Calibration Modal, SVision Engine, Synapse Network, and Settings tabs, exporting `recordings/svision_apresentacao.mp4`.
 
 ---
 
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
-</div>
+## 5. Related Documentation
+
+- [IPC Architecture](ipc_architecture.md)
+- [API & IPC Reference](api_and_ipc_reference.md)
+- [Development & Testing](development_testing.md)
+
+---
+
+*SVISION Core Documentation — v1.2.0 (2026-11-16)*

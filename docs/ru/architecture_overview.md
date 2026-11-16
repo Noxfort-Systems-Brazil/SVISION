@@ -1,55 +1,26 @@
-# 🏛️ SVISION: Трехчастная архитектура системы
-### Суверенная платформа Edge AI для анализа городского трафика
-*Noxfort Systems — A State Of Art Company*
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-⬅️ [Главный портал](README.md) | ⚡ [GPU пайплайн](../en/gpu_pipeline.md) | 🔌 [IPC Zero-Port](../en/ipc_architecture.md) | 🌐 [Диспетчер Go](../en/synapse_dispatcher_go.md)
+# Обзор архитектуры — SVISION Core v1.2.0
 
----
+SVISION Core построен на трёхуровневой архитектуре с отказоустойчивым супервизором **F.E.N.I.X.**, каноническим планировщиком **12 FPS (`SliceScheduler`)** и передачей телеметрии без очередей (**Zero-Backlog Fire-and-Forget**) узлам Synapse.
 
-## 1. Трехчастная модель Edge AI
-
-**SVISION** распределяет обязанности между тремя специализированными процессами операционной системы:
-
-1. **Десктопная оболочка (Rust + Tauri v2 + React 19)**: Нативный интерфейс на базе WebKitGTK, потребляющий на ~80% меньше оперативной памяти по сравнению с Electron.
-2. **Когнитивное ядро ИИ (Python 3.12 + PyTorch + TensorRT)**: Аппаратное декодирование видео через **NVIDIA NVDEC**, нейросетевое кадрирование зон движения (*Neural Crop & Zoom*) и инференс моделей YOLO 11 на ядрах Tensor Cores.
-3. **Сетевой шлюз (Диспетчер Go Synapse)**: Изолирует сетевой стек, управляет сокетом Unix Domain Socket (`0o600`) и мультиплексирует исходящие потоки телеметрии TCP в центральный кластер Synapse.
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                    Трехчастная архитектура                  │
-│                                                             │
-│  ┌──────────────┐     STDIN / STDOUT     ┌──────────────┐   │
-│  │ Tauri + React│ ◄════════════════════► │ Python Core  │   │
-│  │(Оболочка Rust│   (Каналы ОС Zero)     │ (YOLO 11 TRT)│   │
-│  └──────────────┘                        └──────┬───────┘   │
-│                                                 │ UDS 0o600 │
-│                                                 ▼           │
-│                                          ┌──────────────┐   │
-│                                          │  Диспетчер   │   │
-│                                          │  Go Synapse  │   │
-│                                          └──────┬───────┘   │
-└─────────────────────────────────────────────────┼───────────┘
-                                                  │ Потоки TCP
-                                                  ▼
-                                       ┌──────────────────────┐
-                                       │ Central Synapse Core │
-                                       └──────────────────────┘
+```mermaid
+flowchart LR
+    UI["Рабочая станция Tauri v2 + React 18"] <-->|"NDJSON STDIN/STDOUT"| FENIX["Супервизор F.E.N.I.X. + Python-демон<br/>SliceScheduler 12 FPS / Triton INT8 / 2D Калман"]
+    FENIX -->|"UDS (/tmp/svision_synapse.sock, 0600)"| GO["Go Synapse Dispatcher<br/>bin/synapse-dispatcher"]
+    GO -->|"TCP NDJSON Zero-Backlog (9001+)"| SYN["Узлы Synapse"]
 ```
 
+## Ключевые принципы
+
+1. **Надёжность под управлением F.E.N.I.X. (`src/fenix/`):** В режиме `--supervisor` / `--fenix` компонент `FenixSupervisor` отслеживает состояние рабочего процесса, очищает VRAM через `VisionStateReconciler` и автоматически перезапускает демон при сбоях.
+2. **GPU-конвейер 12 FPS (`src/engine/`):** `SliceScheduler` управляет фовеальным выделением областей движения (`MotionExtractor`), очередями `VipKernelScheduler`, тепловым/VRAM-контролем (`ElasticGovernor`) и инференсом TensorRT INT8 (`TritonInt8Engine`) с изолированными по камерам `ModelGearbox` и `KalmanTracker`.
+3. **Сетевой вывод без буферных очередей:** `FluidFlowEstimator` и `FireForgetBatcher` формируют направленные потоки (`direction_deg`, `speed`, `density`, `calibrated`, `is_heartbeat`) и передают их через `svision-go` (пакет немедленно отбрасывается, если TCP-соединение недоступно).
+4. **Хранение в SQLite и защита данных:** База `svision_telemetry.db` сохраняет только настройки камер, матрицы гомографии `3x3` и агрегированные профили трафика — без сохранения кадров или номеров автомобилей.
+
+Подробные спецификации на английском языке: [Architecture Overview (EN)](../en/architecture_overview.md) и [F.E.N.I.X. Supervisor (EN)](../en/fenix_supervisor.md).
+
 ---
 
-## 2. Инженерные принципы
-
-- **Суверенитет данных**: 100% обработки видео происходит локально на устройстве; кадры видео никогда не передаются во внешнюю сеть.
-- **IPC Zero-Port**: Межпроцессное взаимодействие осуществляется через стандартные каналы ввода-вывода ОС без открытия сетевых портов.
-- **Неблокирующий вывод**: Обрывы сетевого соединения удерживаются в кольцевых буферах оперативной памяти с вытеснением по алгоритму LRU.
-- **Конфиденциальность по умолчанию**: Автоматическое удаление массивов изображений и тензоров из логов и трейсбеков ошибок.
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Инженерия суверенного периферийного зрения • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Лицензировано под AGPLv3.</small>
-</div>
+*Документация SVISION Core — v1.2.0 (2026-11-16)*

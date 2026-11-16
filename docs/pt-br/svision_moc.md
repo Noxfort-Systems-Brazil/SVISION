@@ -1,192 +1,122 @@
----
-tags: [moc, hub, docs, obsidian, svision, indice, brasil]
-aliases: [SVISION MOC PT-BR, Central Master, Índice de Documentação, Grafo de Conhecimento]
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<div align="center">
+# SVISION Core — Índice Mestre do Repositório (MOC)
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
-
-# SVISION Central Master de Documentação Técnica
-### Synapse Vision — Índice Central e Grafo de Conhecimento da Arquitetura de Visão de Borda
-*Noxfort Systems — A State Of Art Company*
-
-</div>
-
-Bem-vindo à biblioteca de documentação técnica do **SVISION** (**Synapse Vision**). Projetado como um ecossistema corporativo de Inteligência Artificial de Borda soberano (*Sovereign Edge AI*) e de ultra-baixa latência para análise de tráfego urbano em tempo real e orquestração semafórica autônoma, o SVISION une visão computacional acelerada por hardware (NVDEC e TensorRT), comunicação entre processos anônima por pipes de sistema operacional (IPC Zero-Port via STDIO) e despacho de rede de alta vazão em Go.
-
-Este índice central fornece cobertura técnica detalhada para engenheiros de IA de borda, especialistas em visão computacional, arquitetos de rede e integradores de sistemas. É 100% compatível com o **GitHub** e com o **[Obsidian](https://obsidian.md/)**.
+Mapa completo de navegação técnica da arquitetura tripartida do **SVISION Core v1.2.0** (Host Desktop Tauri/React, Daemon de Visão & GPU em Python com **F.E.N.I.X. Supervisor**, e Dispatcher de Rede Zero-Backlog em Go).
 
 ---
 
-## 🗺️ Mapa da Base de Código e Hierarquia de Diretórios
+## 1. Documentação Principal & Guias
+
+| Documento | Escopo Técnico |
+| :--- | :--- |
+| [README.md](../../README.md) | Visão geral, pré-requisitos, modos de execução e início rápido. |
+| [ARCHITECTURE.md](../../ARCHITECTURE.md) | Princípios estruturais, sequência de boot, isolamento de falhas e contratos de dados. |
+| [CHANGELOG.md](../../CHANGELOG.md) | Histórico de versões (`v1.2.0` atual e `v1.0.0` inicial). |
+| [CONTRIBUTING.md](../../CONTRIBUTING.md) | Padrões de contribuição, lint (Ruff/ESLint/Go), testes e convenção de commits. |
+| [Visão Geral da Arquitetura](architecture_overview.md) | Modelo tripartido, fluxo de 12 FPS, hidratação SQLite e mapa de módulos. |
+| [Supervisor F.E.N.I.X.](fenix_supervisor.md) | Watchdog de resiliência (`--supervisor` / `--fenix`), backoff exponencial e reconciliação de GPU. |
+| [Pipeline de GPU e Marchas](gpu_pipeline.md) | `SliceScheduler` (12 FPS), `ElasticGovernor`, `TritonInt8Engine`, `ModelGearbox` e `VipKernelScheduler`. |
+| [Subsistema de Visão](vision_subsystem.md) | `NvdecStreamDecoder` com thread dedicada, Kalman 2D linear, `AutoLaneMapper`, `ASCAnalyzer` e `WaveletAEOCC`. |
+| [Ciclo de Vida e Calibração](camera_lifecycle.md) | Máquina de estados (`SCS_CALIBRATION`, `PRODUCTION`, `ERROR`) sem fallback aleatório. |
+| [Arquitetura IPC](ipc_architecture.md) | Ponte STDIN/STDOUT NDJSON (Rust ↔ Python) e UDS (Python ↔ Go). |
+| [Synapse Dispatcher (Go)](synapse_dispatcher_go.md) | Pacote plano Go (`bin/synapse-dispatcher`), alocação de portas e entrega TCP Zero-Backlog. |
+| [Egress de Dados e Motor de Fluxo](data_egress.md) | `FluidFlowEstimator`, `FireForgetBatcher`, `SynapseEmitter`, `SynapseBuilder` e histórico SQLite. |
+| [UI Desktop e Tauri](desktop_ui_tauri.md) | Workstation React 18, Tauri v2, Modal de Calibração, Modo Demo e `record_presentation.cjs`. |
+| [Segurança e LGPD](security_lgpd.md) | Zero armazenamento de imagens, sanitização de logs RTSP, UDS `0600` e tokens API. |
+| [Referência de API e IPC](api_and_ipc_reference.md) | Esquemas completos dos 8 comandos STDIN, eventos STDOUT, UDS e FastAPI. |
+| [Referência de Configuração](configuration_reference.md) | Variáveis `SVisionConfig`, `settings.ini` e esquema SQLite `svision_telemetry.db`. |
+| [Desenvolvimento e Testes](development_testing.md) | Compilação INT8 (`compile_int8.py`), `run_all_tests.sh` e gravação Full-HD. |
+| [Implantação e Operações](deployment_operations.md) | `svision.service`, `Dockerfile`, `docker-compose.yml` e resolução de problemas. |
+
+---
+
+## 2. Árvore Completa do Repositório
 
 ```text
 SVISION_CORE/
-├── svision.py                  # Inicializador Mestre (Supervisor de Processos, Resolução de Ambiente, Go Spawn)
-├── ARCHITECTURE.md             # Blueprint da Arquitetura do Sistema Tripartite (Rust + Python + Go)
-├── pyproject.toml              # Configurações de compilação Python e ferramentas (Ruff, Pytest)
-├── package.json                # Dependências da interface desktop (React 19, Tailwind v4, Vite 8)
-├── requirements.txt            # Dependências de execução de borda (PyTorch, TensorRT, OpenCV)
-├── settings.ini                # Parâmetros de execução do sistema (Câmeras, Inferência, Rede, Logs)
-├── sync.sh                     # Script de sincronização automática com o GitHub em 1 clique
-├── mkdocs.yml                  # Configuração da documentação técnica no Material for MkDocs
-│
-├── bin/                        # Binários nativos compilados (svision-go)
-│   └── svision-go              # Binário executável do despachante de rede em Go
-│
-├── docs/                       # Base de Conhecimento e Suíte MkDocs
-│   ├── SVISION_MOC.md          # Central Master MOC (Inglês)
-│   ├── index.md                # Portal Principal de Entrada
-│   ├── README.md               # Roteador Multilíngue e Matriz de Tópicos
-│   ├── assets/                 # Logotipos oficiais (svision-logo.png, noxfort-logo.png)
-│   ├── stylesheets/            # Folhas de estilo personalizadas (extra.css)
-│   ├── pt-br/                  # Suíte de documentação em Português do Brasil
-│   │   ├── README.md           # Hub em Português
-│   │   ├── svision_moc.md      # Este Mapa de Conteúdo
-│   │   ├── architecture_overview.md # Arquitetura do Sistema e Modelo Tripartite
-│   │   ├── gpu_pipeline.md     # Pipeline de Inferência GPU e TensorRT FP16
-│   │   ├── vision_subsystem.md # Subsistema de Visão, NVDEC e ByteTrack
-│   │   ├── camera_lifecycle.md # Ciclo de Vida da Câmera e Calibração SCS
-│   │   ├── ipc_architecture.md # Arquitetura IPC Zero-Port (Pipes STDIO)
-│   │   ├── synapse_dispatcher_go.md # Despachante de Rede em Go
-│   │   ├── data_egress.md      # Egress de Dados, MicroBatcher e Buffer RAM
-│   │   ├── desktop_ui_tauri.md # Interface Desktop Tauri v2 + React 19
-│   │   ├── security_lgpd.md    # Segurança, Soberania e Conformidade LGPD
-│   │   ├── api_and_ipc_reference.md # Catálogo de Comandos e Protocolo UDS
-│   │   ├── configuration_reference.md # Configurações, settings.ini e SQLite
-│   │   ├── development_testing.md # Ambiente de Desenvolvimento e Testes
-│   │   └── deployment_operations.md # Implantação de Produção e Docker
-│   ├── en/                     # Suíte de documentação canônica em Inglês
-│   ├── es/                     # Portal em Espanhol
-│   ├── fr/                     # Portal em Francês
-│   ├── ru/                     # Portal em Russo
-│   └── zh/                     # Portal em Chinês Simplificado
-│
-├── scripts/                    # Scripts operacionais e utilitários
-│   ├── compile_trt.py          # Compilador de motores TensorRT INT8 / FP16
-│   └── generate_test_stream.py # Gerador de fluxo RTSP sintético para testes
-│
-├── src/                        # Motor Cognitivo de IA de Borda em Python
-│   ├── api/                    # Contratos de API, modelos de dados e tratamento de exceções
-│   ├── common/                 # Gerenciador de estado global, logger, schemas e banco SQLite
-│   ├── engine/                 # Orquestração de inferência, batcher CUDA e sequenciador SCS
-│   │   ├── cuda_batcher.py     # Consumidor de lotes multicâmera centralizado (FP16/INT8)
-│   │   ├── model_gearbox.py    # Câmbio dinâmico de modelos YOLO 11 (Nano, Small, Medium, Heavy)
-│   │   ├── neural_cropper.py   # Pipeline de corte e zoom neural em regiões de movimento (ROI)
-│   │   └── scs_sequencer.py    # Sequenciador de Calibração Escalonada (MOG2 + DBSCAN)
-│   ├── ipc/                    # Comunicação entre processos de porta zero
-│   │   ├── stdio_daemon.py     # Processador de pipes STDIN/STDOUT via JSON-ND
-│   │   ├── command_router.py   # Roteador de comandos da interface desktop
-│   │   └── telemetry_emitter.py# Transmissor de telemetria de alta frequência para a UI
-│   ├── network/                # Egress de borda e empacotamento de telemetria
-│   │   ├── synapse_emitter.py  # Cliente de envio via Unix Domain Socket (`/tmp/svision_synapse.sock`)
-│   │   ├── micro_batcher.py    # Agregador de métricas a 1 Hz (Schema v2.0)
-│   │   └── ram_buffer.py       # Fila volátil em anel na memória com descarte LRU
-│   └── vision/                 # Algoritmos de visão computacional e cinemática
-│       ├── rtsp_decoder.py     # Decodificador de fluxo de vídeo acelerado por NVDEC
-│       ├── bytetrack.py        # Rastreador cinemático em dois estágios
-│       ├── homography.py       # Transformada de perspectiva e cálculo de velocidade real (km/h)
-│       └── lane_mapper.py      # Atribuição espacial ponto-em-polígono acelerada na GPU
-│
-├── src-tauri/                  # Shell de Apresentação Desktop (Rust / Tauri v2)
-│   ├── src/                    # Backend Rust: janelas, system tray e supervisão de pipes
-│   ├── Cargo.toml              # Manifesto de dependências do Rust
-│   └── tauri.conf.json         # Configurações de segurança e janelas do Tauri v2
-│
-├── svision-go/                 # Gatekeeper de Rede de Alta Performance (Go 1.22+)
-│   ├── cmd/dispatcher/         # Ponto de entrada do despachante e listener de socket UDS
-│   ├── pkg/multiplexer/        # Pool dinâmico de conexões TCP persistentes com o Synapse
-│   ├── pkg/uds/                # Servidor Unix Domain Socket de alta vazão (0o600)
-│   └── go.mod                  # Módulo e dependências Go
-│
-└── ui/                         # Painel de Controle Frontend em React 19
-    ├── src/
-    │   ├── components/         # Componentes de interface, cards e players de vídeo
-    │   ├── hooks/              # Hooks React customizados (useTelemetry, useIPC, useCameras)
-    │   ├── views/              # WorkspaceView, SensorsView, EngineView, NetworkView, SettingsView
-    │   └── locales/            # Dicionários de internacionalização (en_us, pt_br)
-    ├── vite.config.js          # Configuração da ferramenta de build Vite
-    └── tailwind.config.js      # Sistema de design Tailwind CSS v4
+├── svision.py                         # Ponto de entrada unificado (--daemon, --supervisor / --fenix)
+├── settings.ini                       # Configuração persistente [SYNAPSE] (host, base_port)
+├── pyproject.toml / requirements.txt  # Dependências Python & configuração Ruff/Pytest
+├── package.json                       # Scripts Frontend, Vitest, Tauri CLI e npm run record
+├── record_presentation.cjs            # Script Playwright Full-HD (1920x1080 @ 60 FPS) em Modo Demo
+├── Dockerfile / docker-compose.yml    # Containerização multi-stage (Go + Python 3.12)
+├── svision.service                    # Unidade systemd para operação 24/7
+├── scripts/
+│   ├── compile_int8.py                # Compilador TensorRT INT8/FP16 por marcha
+│   └── run_all_tests.sh               # Executor unificado (Ruff + 23 Pytest + 5 Go + 5 Vitest)
+├── src/
+│   ├── main.py                        # Bootstrap opcional FastAPI (:8000) & _sanitized_excepthook LGPD
+│   ├── fenix/                         # Supervisor de Resiliência F.E.N.I.X.
+│   │   ├── fenix_supervisor.py        # Loop watchdog, backoff exponencial e reconciliação
+│   │   ├── process_runner.py          # Runner de subprocessos para daemons
+│   │   ├── multiprocessing_runner.py  # Runner alternativo multiprocessing
+│   │   ├── protocols.py               # Contratos BaseRunner / StateReconciler / SupervisorConfig
+│   │   ├── recovery_policy.py         # Políticas de reinício e jitter de backoff
+│   │   └── state_reconciler.py        # VisionStateReconciler (limpeza de GPU/VRAM e estados)
+│   ├── common/
+│   │   ├── config.py                  # SVisionConfig (os.getenv + configparser settings.ini)
+│   │   ├── database.py                # SQLiteStateRepository (CameraNode, TrafficProfileNode)
+│   │   └── state_manager.py           # CameraStateManager thread-safe com persistência SQLite
+│   ├── engine/
+│   │   ├── slice_scheduler.py         # Orquestrador temporal canônico a 12 FPS (~83.3 ms)
+│   │   ├── pipeline_orchestrator.py   # Coordena decodificação, slicing, inferência e egress
+│   │   ├── pipeline_supervisor.py     # Isolamento por câmera (ModelGearbox e KalmanTracker dedicados)
+│   │   ├── triton_int8_engine.py      # Motor TensorRT INT8 com leitura dinâmica de MAX_BATCH e chunking
+│   │   ├── model_gearbox.py           # Câmbio dinâmico Nano / Small / Medium / Heavy
+│   │   ├── elastic_governor.py        # Proteção de VRAM/Térmica (safety_ratio=0.15, critical_mb=1000)
+│   │   ├── vip_scheduler.py           # Priorização de lotes de crops (demand_weight, latency_weight)
+│   │   ├── ram_staging_pool.py        # Buffer volátil de staging em RAM para slices
+│   │   ├── motion_extractor.py        # Extração foveada periférica (320px) + padding de ROIs (min 64px)
+│   │   ├── fluid_flow_estimator.py    # Vetores macroscópicos (direção°, velocidade km/h, densidade)
+│   │   ├── synapse_emitter.py         # Emissão contínua + gravação de perfis de tráfego SQLite (>=5s)
+│   │   ├── cuda_batch_consumer.py     # Consumidor assíncrono / fallback CUDA para lotes
+│   │   ├── camera_agent.py            # Entidade operacional da câmera e transições de ciclo de vida
+│   │   ├── frame_grabber.py           # Abstração de captura auxiliar
+│   │   ├── inference_node.py          # Nó auxiliar de inferência
+│   │   ├── lifecycle.py               # Utilitários de inicialização e encerramento do motor
+│   │   └── scs_orchestrator.py        # Fila assíncrona de calibração autonômica (ASC)
+│   ├── vision/
+│   │   ├── stream_decoder.py          # NvdecStreamDecoder com thread de leitura contínua (max_dim=720)
+│   │   ├── kalman_tracker.py          # Filtro de Kalman 2D linear (x, y, vx, vy) + predição de oclusão
+│   │   ├── lane_mapper.py             # AutoLaneMapper (Node-Level, JSON e homografia de 4 pontos)
+│   │   ├── asc_analyzer.py            # AutonomicSceneConvergence (MOG2 + Optical Flow, 240 polls reais)
+│   │   └── optical_flow.py            # OpticalFlowAnalyzer denso para estabilidade de cena
+│   ├── models/
+│   │   ├── wavelet_ae_occ.py          # Autoencoder Wavelet para detecção de oclusões/anomalias
+│   │   └── yolo/                      # Pesos YOLO11 (.pt), ONNX e engines TensorRT INT8 (.engine)
+│   ├── ipc/
+│   │   ├── stdio_daemon.py            # Daemon STDIN/STDOUT + hidratação SQLite + cleanup Go/CUDA
+│   │   ├── stdio_transport.py         # Escrita NDJSON sincronizada por lock
+│   │   ├── command_router.py          # Roteamento de comandos JSON
+│   │   ├── command_handlers.py        # 8 handlers (ping, sync_state, add/remove/set, homography, params)
+│   │   ├── ipc_protocol.py            # Constantes e schemas de mensagens IPC
+│   │   └── telemetry_broadcaster.py   # Broadcast periódico (cameras, engine_stats, network_stats, ports)
+│   ├── network/
+│   │   ├── micro_batcher.py           # FireForgetBatcher (média angular circular atan2, zero filas)
+│   │   ├── synapse_builder.py         # build_fluid_payload & dispatch com roteamento dual-ID
+│   │   └── synapse_uds_client.py      # Cliente assíncrono UDS para o binário Go
+│   └── api/                           # Servidor FastAPI/WebSocket opcional (:8000) com token 64-hex
+├── svision-go/                        # Pacote Go plano (bin/synapse-dispatcher)
+│   ├── main.go / uds_server.go        # Servidor UDS /tmp/svision_synapse.sock (chmod 0600, max 1MB)
+│   ├── port_manager.go / port_allocator.go # Gerenciamento e pool de portas TCP (9001+)
+│   ├── camera_stream.go               # Push síncrono Zero-Backlog (deadline 100ms, reconexão 2s)
+│   └── *_test.go                      # 5 suítes de teste Go
+├── src-tauri/                         # Host nativo Tauri v2 (Rust)
+│   ├── tauri.conf.json / capabilities/default.json
+│   └── src/ (lib.rs, backend/{mod.rs, ipc.rs, state.rs})
+├── ui/                                # Workstation React 18 + Vite + Tailwind + ECharts
+│   ├── core/App.jsx                   # Shell principal + indicador Modo Demonstração
+│   ├── views/                         # CamerasTab, SVisionTab, SynapseTab, SettingsTab
+│   ├── components/                    # Sidebar, CameraList, CameraDetailPane, Modals, Gráficos
+│   ├── hooks/                         # 7 hooks reativos (useCameras, useEngineStats, etc.)
+│   ├── services/ipc_client.js         # Cliente Tauri IPC + simulação completa em Modo Demo
+│   ├── contexts/ThemeContext.jsx      # Persistência de tema (?theme=light / svision_theme)
+│   └── locales/                       # pt_br.json & en_us.json
+└── tests/                             # 23 módulos Pytest cobrindo todo o backend Python
 ```
 
 ---
 
-## 🗺️ Navegação Principal & Módulos
-
-| Subsistema / Dimensão | Foco Técnico | Link Direto |
-| :--- | :--- | :---: |
-| 📚 **Central Master MOC** | Hub Principal Obsidian e Mapa da Base de Código | [Explorar Central](svision_moc.md) |
-| 🏛️ **Arquitetura do Sistema** | Modelo Tripartite (Rust + Python + Go) e Soberania | [Ver Arquitetura](architecture_overview.md) |
-| ⚡ **Pipeline de Inferência GPU**| TensorRT FP16, Consumidor CUDA e Câmbio de Modelos | [Ver Pipeline GPU](gpu_pipeline.md) |
-| 👁️ **Subsistema de Visão** | Ingestão NVDEC, ByteTrack, Filtro de Kalman e Homografia | [Ver Guia de Visão](vision_subsystem.md) |
-| 🔄 **Ciclo de Vida & Calibração** | Pipeline de 5 Estágios, SCS e Agrupamento DBSCAN | [Ver Ciclo de Vida](camera_lifecycle.md) |
-| 🔌 **Arquitetura IPC Zero-Port** | Pipes Anônimos do SO, JSON-ND e Zero Portas Abertas | [Ver Guia IPC](ipc_architecture.md) |
-| 🌐 **Despachante Go Synapse** | Multiplexação TCP Dinâmica e Servidor UDS de Alta Vazão | [Ver Despachante Go](synapse_dispatcher_go.md) |
-| 📤 **Egress de Dados & Buffer** | MicroBatcher a 1 Hz, Schema v2.0 e Anel Volátil em RAM | [Ver Egress de Dados](data_egress.md) |
-| 🖥️ **Interface Desktop Tauri** | Shell Tauri v2, React 19, ECharts e Internacionalização | [Ver Guia de Interface](desktop_ui_tauri.md) |
-| 🔒 **Segurança & LGPD** | Soberania de Borda, Zero Saída de Quadros e Sanitização | [Ver Segurança](security_lgpd.md) |
-| 📡 **Referência de API e IPC** | Catálogo de Comandos STDIN, Eventos e Protocolo UDS | [Ver Referência API](api_and_ipc_reference.md) |
-| ⚙️ **Referência de Configuração**| Hierarquia Pydantic, Overrides INI e Esquema SQLite | [Ver Configurações](configuration_reference.md) |
-| 🧪 **Desenvolvimento & Testes** | Suítes Pytest, Vitest, Benchmarks e Motores TensorRT | [Ver Testes](development_testing.md) |
-| 🚀 **Implantação & Operações** | Serviços Linux Systemd, Docker Multi-Stage e Jetson | [Ver Implantação](deployment_operations.md) |
-
----
-
-## ⚡ Fluxo Arquitetural Tripartite
-
-```mermaid
-flowchart TD
-    subgraph Host["Host de Apresentação Desktop (Rust / Tauri v2)"]
-        UI["Painel React 19 + ECharts"]
-        Tauri["Host Nativo Tauri v2 (Rust / WebKitGTK)"]
-        UI <-->|Eventos e Comandos IPC| Tauri
-    end
-
-    subgraph Core["Motor de IA de Borda (Python 3.12 / CUDA)"]
-        STDIO["StdioDaemon (Pipes de SO Zero-Port)"]
-        Batch["Consumidor de Lotes CUDA (YOLO 11 TRT FP16)"]
-        Tracker["ByteTrack + Kalman + Kornia"]
-        ASC["Analisador de Tráfego ASC (SCS + DBSCAN)"]
-        Egress["SynapseEmitter (1 Hz Schema v2.0)"]
-        
-        STDIO <-->|Pipes de SO STDIN/STDOUT| Tauri
-        STDIO --> Batch
-        Batch --> Tracker --> ASC --> Egress
-    end
-
-    subgraph Gatekeeper["Gatekeeper de Rede (Go 1.22+)"]
-        GoDisp["Despachante Go Synapse"]
-        PortMgr["Gerenciador de Portas (Multiplexador TCP)"]
-        GoDisp --> PortMgr
-    end
-
-    subgraph Central["Nuvem Central / Centro de Controle Operacional"]
-        SynapseCore["Cluster Central Synapse"]
-    end
-
-    Egress <-->|UDS /tmp/svision_synapse.sock (0o600)| GoDisp
-    PortMgr -->|Fluxos Dedicados TCP/TLS de Saída| SynapseCore
-```
-
----
-
-## 🏷️ Índice de Tags no Obsidian
-
-Utilize estas tags no Obsidian para filtrar o grafo de conhecimento e consultar conexões entre módulos:
-
-- `#svision/arquitetura`: [Arquitetura do Sistema](architecture_overview.md), [Arquitetura IPC Zero-Port](ipc_architecture.md)
-- `#svision/gpu`: [Pipeline GPU](gpu_pipeline.md), [Subsistema de Visão](vision_subsystem.md)
-- `#svision/rede`: [Despachante Go](synapse_dispatcher_go.md), [Egress de Dados](data_egress.md)
-- `#svision/ui`: [Interface Desktop](desktop_ui_tauri.md), [Referência de API](api_and_ipc_reference.md)
-- `#svision/operacoes`: [Implantação](deployment_operations.md), [Desenvolvimento e Testes](development_testing.md), [Configurações](configuration_reference.md)
-- `#svision/seguranca`: [Segurança e LGPD](security_lgpd.md)
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Engenharia de Visão de Borda Soberana • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licenciado sob AGPLv3.</small>
-</div>
+*Documentação SVISION Core — v1.2.0 (2026-11-16)*

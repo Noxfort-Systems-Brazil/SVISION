@@ -1,55 +1,26 @@
-# 🏛️ SVISION : Architecture Système Tripartite
-### Plateforme Souveraine d'IA en Périphérie pour le Trafic Urbain
-*Noxfort Systems — A State Of Art Company*
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-⬅️ [Portail de Documentation](README.md) | ⚡ [Pipeline GPU](../en/gpu_pipeline.md) | 🔌 [IPC Zero-Port](../en/ipc_architecture.md) | 🌐 [Dispatcher Go](../en/synapse_dispatcher_go.md)
+# Vue d'Ensemble de l'Architecture — SVISION Core v1.2.0
 
----
+SVISION Core repose sur une architecture tripartite dotée d'une supervision **F.E.N.I.X.**, d'un ordonnanceur temporel à **12 FPS (`SliceScheduler`)** et d'une diffusion **Zero-Backlog Fire-and-Forget** vers les nœuds Synapse.
 
-## 1. Modèle Tripartite en Périphérie Souveraine
-
-**SVISION** répartit ses responsabilités sur trois processus spécialisés et coopératifs au niveau du système d'exploitation :
-
-1. **Shell Desktop (Rust + Tauri v2 + React 19)** : Interface native légère basée sur WebKitGTK consommant ~80% moins de mémoire vive qu'Electron.
-2. **Moteur Cognitif IA (Python 3.12 + PyTorch + TensorRT)** : Décodage matériel de flux RTSP via **NVIDIA NVDEC**, découpage dynamique des zones d'intérêt (*Neural Crop & Zoom*) et inférence accélérée avec YOLO 11.
-3. **Passerelle Réseau (Dispatcher Go Synapse)** : Isolation de la couche réseau, gestion du socket local Unix Domain Socket (`0o600`) et multiplexage de flux TCP vers le cluster central Synapse.
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                   Architecture Tripartite                   │
-│                                                             │
-│  ┌──────────────┐     STDIN / STDOUT     ┌──────────────┐   │
-│  │ Tauri + React│ ◄════════════════════► │ Python Core  │   │
-│  │ (Shell Rust) │  (Tubes Système Zero)  │ (YOLO 11 TRT)│   │
-│  └──────────────┘                        └──────┬───────┘   │
-│                                                 │ UDS 0o600 │
-│                                                 ▼           │
-│                                          ┌──────────────┐   │
-│                                          │  Dispatcher  │   │
-│                                          │  Go Synapse  │   │
-│                                          └──────┬───────┘   │
-└─────────────────────────────────────────────────┼───────────┘
-                                                  │ Flux TCP
-                                                  ▼
-                                       ┌──────────────────────┐
-                                       │ Central Synapse Core │
-                                       └──────────────────────┘
+```mermaid
+flowchart LR
+    UI["Workstation Tauri v2 + React 18"] <-->|"NDJSON STDIN/STDOUT"| FENIX["Superviseur F.E.N.I.X. + Daemon Python<br/>SliceScheduler 12 FPS / Triton INT8 / Kalman 2D"]
+    FENIX -->|"UDS (/tmp/svision_synapse.sock, 0600)"| GO["Go Synapse Dispatcher<br/>bin/synapse-dispatcher"]
+    GO -->|"TCP NDJSON Zero-Backlog (9001+)"| SYN["Nœuds Synapse"]
 ```
 
+## Principes Clés
+
+1. **Résilience F.E.N.I.X. (`src/fenix/`):** En mode `--supervisor` / `--fenix`, `FenixSupervisor` surveille le worker, libère la VRAM via `VisionStateReconciler` et relance le service après une défaillance critique.
+2. **Pipeline GPU 12 FPS (`src/engine/`):** `SliceScheduler` cadence l'extraction fovéale (`MotionExtractor`), l'ordonnancement dynamique (`VipKernelScheduler`), le contrôle thermique (`ElasticGovernor`) et l'inférence TensorRT INT8 (`TritonInt8Engine`) avec `ModelGearbox` et `KalmanTracker` isolés par caméra.
+3. **Diffusion Sans File d'Attente:** `FluidFlowEstimator` et `FireForgetBatcher` génèrent des vecteurs directionnels (`direction_deg`, `speed`, `density`, `calibrated`, `is_heartbeat`) transmis via `svision-go`, qui abandonne immédiatement tout paquet si le socket TCP distant est fermé.
+4. **Stockage SQLite et Confidentialité:** `svision_telemetry.db` conserve uniquement les paramètres des caméras, matrices `3x3` et profils agrégés — aucune image ni plaque n'est enregistrée.
+
+Pour les spécifications détaillées en anglais, consultez [Architecture Overview (EN)](../en/architecture_overview.md) et [F.E.N.I.X. Supervisor (EN)](../en/fenix_supervisor.md).
+
 ---
 
-## 2. Principes d'Ingénierie
-
-- **Souveraineté Périphérique** : 100% du traitement vidéo s'exécute sur le matériel local ; aucune image brute n'est transmise au cloud.
-- **IPC Zero-Port** : Communication par tubes d'E/S système standard, garantissant zéro port réseau ouvert.
-- **Sortie Non Bloquante** : Les interruptions de connectivité sont absorbées par des mémoires tampons circulaires en RAM avec éviction LRU.
-- **Conformité RGPD / LGPD** : Masquage et assainissement actif des empreintes mémoire et des piles d'erreurs en production.
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Ingénierie de Vision Périphérique Souveraine • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licencié sous AGPLv3.</small>
-</div>
+*Documentation SVISION Core — v1.2.0 (2026-11-16)*

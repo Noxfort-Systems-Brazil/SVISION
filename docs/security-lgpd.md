@@ -1,134 +1,64 @@
----
-title: "Security, Process Isolation & LGPD Compliance"
-tags: [svision, security, lgpd, privacy, edge-sovereignty, sanitization, architecture]
-aliases: ["Security & LGPD", "Data Privacy", "Process Isolation"]
-updated: 2026-09-05
-category: "Security & LGPD Compliance"
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-[🏠 Home](index.md) › **Security & LGPD**
+# Security, Privacy & LGPD Compliance
+
+SVISION Core follows a **Privacy-by-Design** and **Zero-Image Storage** architecture suitable for urban ITS and LGPD-regulated (Brazil General Data Protection Law) environments.
 
 ---
 
-# Security, Process Isolation & LGPD Compliance
+## 1. LGPD Zero-Image & Anonymized Telemetry Architecture
 
-> SVision — Architecture Documentation  
-> Copyright © 2026 Gabriel Moraes — Noxfort Systems
+| Layer | Data Retained in Volatile RAM / GPU | Data Persisted to Disk |
+| :--- | :--- | :--- |
+| **Video Ingestion (`NvdecStreamDecoder`)** | Latest raw frame + peripheral/motion ROI slice (~83 ms cadence) | **None.** Frames are overwritten continuously and freed on disconnect. |
+| **GPU Staging & Inference (`RamStagingPool`, `TritonInt8Engine`)** | Cropped/padded `64x64+` tensors & ephemeral 2D Kalman IDs | **None.** Zero snapshots, cropped car images, or license plates saved. |
+| **Database (`svision_telemetry.db`)** | In-memory cache of `CameraInfo` (`CameraStateManager`) | `cameras` (metadata, homography, tuning JSON) and `traffic_profiles` (anonymized aggregate `density` & `average_velocity`). |
+| **Synapse Egress (`FluidFlowEstimator` → Go)** | Active directional channels (`direction_deg`, `speed`, `density`) | **None (Zero-Backlog).** Downstream receives macro flow scalars only. |
 
----
-
-## Overview
-
-SVision is engineered around the principle of **Privacy & Security by Design** in strict compliance with the **Brazilian General Data Protection Law (LGPD - Law No. 13,709/2018)** and international standards for edge visual data governance.
-
-The platform operates under absolute **Edge Sovereignty**: no raw video streams, pedestrian biometrics, or license plate images are ever exported to external clouds or stored on unmanaged media.
+Because SVISION Core extracts **macroscopic traffic flow vectors** rather than OCR license plates, facial biometrics, or video archives, no personally identifiable information (PII) leaves the volatile GPU memory domain.
 
 ---
 
-## Core Security Principles
+## 2. Runtime Log & Credential Sanitization
 
-| Principle | Implementation in SVision |
-|-----------|------------------------------|
-| **Edge Sovereignty** | 100% of the computer vision pipeline (NVDEC, YOLO, Kalman, LaneMapper) runs on the edge device's local GPU. |
-| **Zero Frame Egress** | Only aggregated statistical metrics (traffic counts, average velocity, density) leave the edge appliance. |
-| **Zero-Port IPC Architecture** | Communication between the desktop UI and AI engine uses anonymous operating system pipes (`STDIN`/`STDOUT`), opening zero local TCP ports. |
-| **Memory & Traceback Scrubbing** | Automatic redaction of image tensors and NumPy buffers from exception tracebacks and logs. |
-| **System Socket Isolation** | The Go Dispatcher Unix Domain Socket is secured with restrictive POSIX permissions (`0o600`). |
+Implemented in `src/main.py` (`_sanitized_excepthook`):
+- Uncaught exceptions pass through `_sanitized_excepthook`, stripping embedded RTSP credentials (`rtsp://user:password@host...` → redacted credentials) before writing tracebacks to `stderr` or log files.
+- `settings.ini` and `svision_telemetry.db` store camera endpoints locally under user XDG storage (`~/Documentos/Svision/database/svision_telemetry.db`). Ensure filesystem permissions on RTSP URI configurations restrict access to authorized operators.
 
 ---
 
-## LGPD Traceback Sanitization (`src/main.py`)
+## 3. Inter-Process & Socket Hardening
 
-### The Challenge
-In traditional Python computer vision deployments, unhandled runtime exceptions cause default error handlers to serialize local variables. When video frames or crops are in scope, APM tools and debug logs can inadvertently leak raw pixel arrays in cleartext to log files.
+### Unix Domain Socket (Go Synapse Dispatcher)
+- **Socket Path:** `/tmp/svision_synapse.sock` (`svision-go/uds_server.go`).
+- **Mandatory File Mode (`0600`):** Immediately after binding the Unix socket, `uds_server.go` forces `os.Chmod(..., 0600)` (customizable via `SVISION_SYNAPSE_UDS_MODE`) so only the owning UID can transmit or receive UDS commands.
+- **Bounded Line Scanner:** Framed reads enforce a hard `1 MB` token cap, rejecting oversized malformed messages.
 
-### The SVision Solution
-SVision installs a custom exception handler hook (`_sanitized_excepthook`) that walks the traceback call stack, inspects local variables, detects sensitive visual buffers, and replaces them with scrubbed descriptors before output:
+### Tauri v2 Capabilities (`src-tauri/capabilities/default.json`)
+- Scopes window privileges to `"core:default"` on `main` / `*`.
+- Exposes only two structured backend IPC commands (`send_svision_command`, `get_backend_status`), prohibiting arbitrary shell execution from the React UI layer.
+- UI input sanitization (`AddCameraModal.jsx`) rejects unsupported schemes and out-of-range TCP ports (`< 1024` or `> 65535`).
 
-```python
-def _sanitized_excepthook(exc_type, exc_value, exc_tb):
-    """Global exception handler ensuring LGPD data compliance."""
-    tb = exc_tb
-    scrubbed_vars = []
-
-    while tb is not None:
-        frame = tb.tb_frame
-        for var_name, var_value in list(frame.f_locals.items()):
-            if _is_sensitive_variable(var_value):
-                safe_repr = _get_scrubbed_repr(var_value)
-                del frame.f_locals[var_name]
-                scrubbed_vars.append(f"{var_name}={safe_repr}")
-        tb = tb.tb_next
-
-    # Force immediate garbage collection of deleted frames
-    gc.collect()
-
-    # Log the sanitized traceback to stderr
-    logger.critical("UNHANDLED EXCEPTION (LGPD-sanitized traceback):\n%s", ...)
-```
-
-### Detection Heuristics and Safe Representations
-
-```python
-def _is_sensitive_variable(value) -> bool:
-    # NumPy arrays larger than 1KB (image frames)
-    if isinstance(value, np.ndarray) and value.nbytes > 1024:
-        return True
-    # PyTorch tensors with more than 256 elements
-    if isinstance(value, torch.Tensor) and value.nelement() > 256:
-        return True
-    # Raw byte buffers larger than 1KB
-    if isinstance(value, (bytes, bytearray)) and len(value) > 1024:
-        return True
-    return False
-```
-
-| Original Data Type | Sanitized Representation Written to Log |
-|--------------------|-----------------------------------------|
-| `np.ndarray` (BGR Frame) | `<SCRUBBED: ndarray shape=(1080, 1920, 3) dtype=uint8>` |
-| `torch.Tensor` (Crop) | `<SCRUBBED: Tensor shape=(1, 3, 128, 128) dtype=torch.float32>` |
-| `bytes` / `bytearray` | `<SCRUBBED: bytes len=2097152>` |
+### Optional FastAPI Local Security (`src/api/security.py`)
+- When the auxiliary HTTP/WebSocket API (`src/api/core_server.py` on `:8000`) is enabled, `LocalTokenManager` generates a cryptographic **64-character hex bearer key** via `secrets.token_hex(32)` and writes it with `0o600` permissions to `config.API_KEY_FILE` (default `/tmp/svision_api_key`).
 
 ---
 
-## Desktop Process Isolation (Tauri v2)
+## 4. Fault Isolation & Volatile Memory Cleanup
 
-Unlike legacy desktop architectures that open local HTTP servers (port 8000) and WebSockets vulnerable to *Cross-Site WebSocket Hijacking (CSWSH)*:
-
-1. **Zero Network Ports**:
-   - The native Rust shell ([`src-tauri/`](desktop-ui-tauri.md)) executes the Python daemon directly as a child process (`StdioDaemon`).
-   - All IPC messages travel through in-process OS pipes (`pipe(2)` / `STDIN` and `STDOUT`).
-   - No TCP or UDP port is opened on the host for application control.
-2. **Granular Tauri Capabilities**:
-   - The `capabilities/default.json` policy restricts WebView access exclusively to explicitly declared commands (`send_svision_command`).
-   - Direct host filesystem and arbitrary shell execution are blocked at the web runtime boundary.
+- **`StdioDaemon.shutdown()`:** Explicitly drains/stops `PipelineOrchestrator`, calls `stream_decoder.disconnect_all()`, empties PyTorch CUDA caches, and terminates `bin/synapse-dispatcher`.
+- **F.E.N.I.X. `VisionStateReconciler.purge_gpu_memory()` (`src/fenix/state_reconciler.py`):** Purges leaked CUDA tensors and clears lingering worker process allocations before spawning a clean replacement worker after a fault.
 
 ---
 
-## Network Security in Go Synapse Dispatcher
+## 5. Related Documentation
 
-Communication between the Python inference core and the Go network gateway ([`synapse-dispatcher-go.md`](synapse-dispatcher-go.md)) is conducted over **Unix Domain Sockets**:
-
-- The socket file `/tmp/svision_synapse.sock` is created with POSIX permission mode `0o600` (read/write restricted strictly to the process owner).
-- Unauthorized system processes cannot access or inject data into the socket.
-- Outbound traffic to the central Synapse cluster consists exclusively of aggregated traffic counts and hardware telemetry.
-
----
-
-## Related Documents
-
-- [🏠 Main Index / MOC](index.md)
-- [🏗️ Architecture Overview](architecture-overview.md)
-- [🔌 Zero-Port IPC Architecture](ipc-architecture.md)
-- [🖥️ Desktop UI (Tauri v2)](desktop-ui-tauri.md)
-- [🌐 Go Synapse Dispatcher](synapse-dispatcher-go.md)
-- [📤 Data Egress & Telemetry](data-egress.md)
+- [F.E.N.I.X. Supervisor](fenix-supervisor.md)
+- [IPC Architecture](ipc-architecture.md)
+- [Synapse Dispatcher (Go)](synapse-dispatcher-go.md)
+- [Deployment & Operations](deployment-operations.md)
 
 ---
 
-<div align="center">
-  <img src="assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
-</div>
+*SVISION Core Documentation — v1.2.0 (2026-11-16)*

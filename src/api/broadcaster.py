@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -28,7 +31,7 @@ without modifying client code.
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Protocol, Union, runtime_checkable
+from typing import Any, List, Protocol, Union, runtime_checkable
 
 from src.api.uds_router import uds_server
 from src.api.ws_router import ws_manager

@@ -2,6 +2,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -77,8 +80,14 @@ def check_cuda_environment():
         return False
 
 
-def compile_model(gear_name: str, calib_data: str = "coco8.yaml", fp16_only: bool = False):
-    """Compiles a single YOLO model to TensorRT INT8 or FP16 engine."""
+def compile_model(
+    gear_name: str,
+    calib_data: str = "coco8.yaml",
+    fp16_only: bool = False,
+    batch_size: int = 16,
+    workspace_gb: int = 2,
+):
+    """Compiles a single YOLO model to TensorRT FP16/INT8 engine on CUDA device 0."""
     file_name = GEAR_MAP.get(gear_name)
     if not file_name:
         logger.error(f"Unknown gear '{gear_name}'. Available: {list(GEAR_MAP.keys())}")
@@ -91,7 +100,7 @@ def compile_model(gear_name: str, calib_data: str = "coco8.yaml", fp16_only: boo
         logger.error(f"Master weights missing: {pt_path}")
         return False
 
-    logger.info(f"\n[Compiling] Gear: {gear_name} ({file_name})")
+    logger.info(f"\n[Compiling] Gear: {gear_name} ({file_name}) | batch={batch_size} | workspace={workspace_gb}GB")
     logger.info(f"Source: {pt_path}")
     logger.info(f"Target: {engine_path}")
 
@@ -99,35 +108,26 @@ def compile_model(gear_name: str, calib_data: str = "coco8.yaml", fp16_only: boo
         from ultralytics import YOLO
         model = YOLO(pt_path)
 
+        common_kwargs = {
+            "format": "engine",
+            "device": 0,
+            "batch": batch_size,
+            "dynamic": True,
+            "workspace": workspace_gb,
+            "simplify": False,
+            "verbose": False,
+        }
+
         if fp16_only:
             logger.info("Exporting to TensorRT FP16 (Half-Precision)...")
-            model.export(
-                format="engine",
-                half=True,
-                dynamic=True,
-                workspace=4,
-                verbose=False
-            )
+            model.export(half=True, **common_kwargs)
         else:
             logger.info(f"Exporting to TensorRT INT8 (Calibrating with {calib_data})...")
             try:
-                model.export(
-                    format="engine",
-                    int8=True,
-                    data=calib_data,
-                    dynamic=True,
-                    workspace=4,
-                    verbose=False
-                )
+                model.export(int8=True, data=calib_data, **common_kwargs)
             except Exception as int8_err:
                 logger.warning(f"INT8 calibration failed ({int8_err}). Falling back to FP16...")
-                model.export(
-                    format="engine",
-                    half=True,
-                    dynamic=True,
-                    workspace=4,
-                    verbose=False
-                )
+                model.export(half=True, **common_kwargs)
 
         if os.path.isfile(engine_path):
             size_mb = os.path.getsize(engine_path) / (1024 * 1024)
@@ -143,10 +143,12 @@ def compile_model(gear_name: str, calib_data: str = "coco8.yaml", fp16_only: boo
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SVision TensorRT INT8 Engine Compiler")
+    parser = argparse.ArgumentParser(description="SVision TensorRT INT8/FP16 Engine Compiler")
     parser.add_argument("--all", action="store_true", help="Compile all 4 YOLO gears (Nano, Small, Medium, Heavy)")
     parser.add_argument("--gear", type=str, default="Nano", help="Specific gear to compile (Nano, Small, Medium, Heavy)")
     parser.add_argument("--calib", type=str, default="coco8.yaml", help="Calibration dataset for INT8 scale factors")
+    parser.add_argument("--batch", type=int, default=16, help="Max dynamic TensorRT batch size (default: 16)")
+    parser.add_argument("--workspace", type=int, default=2, help="TensorRT workspace size in GB (default: 2)")
     parser.add_argument("--fp16", action="store_true", help="Force FP16 export instead of INT8")
     parser.add_argument("--check", action="store_true", help="Only check CUDA environment and exit")
 
@@ -164,7 +166,13 @@ def main():
 
     success_count = 0
     for gear in gears_to_compile:
-        if compile_model(gear, calib_data=args.calib, fp16_only=args.fp16):
+        if compile_model(
+            gear,
+            calib_data=args.calib,
+            fp16_only=args.fp16,
+            batch_size=args.batch,
+            workspace_gb=args.workspace,
+        ):
             success_count += 1
 
     logger.info("=" * 60)

@@ -12,7 +12,7 @@
 [![React](https://img.shields.io/badge/React-19.2-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![TensorRT](https://img.shields.io/badge/TensorRT-10.x-76B900?style=flat&logo=nvidia&logoColor=white)](https://developer.nvidia.com/tensorrt)
-[![License](https://img.shields.io/badge/License-AGPL_v3-blue?style=flat)](../AGPL-3.0%20-%20SVSION.txt)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://spdx.org/licenses/AGPL-3.0-or-later.html)
 
 ---
 
@@ -22,10 +22,10 @@
 |:---:|:---:|:---:|---|
 | **🇺🇸 English** | [**`docs/en/`**](en/README.md) | **Canonical (Source of Truth)** | Full technical documentation suite in English. |
 | **🇧🇷 Português (Brasil)** | [**`docs/pt-br/`**](pt-br/README.md) | **Completo (Equipe Interna)** | Documentação técnica completa em Português do Brasil. |
-| **🇪🇸 Español** | [**`docs/es/`**](es/README.md) | **Completo (Latinoamérica)** | Documentación técnica completa en Español para operaciones internacionales. |
-| **🇫🇷 Français** | [**`docs/fr/`**](fr/README.md) | **Complet (Documentation)** | Suite complète de documentation technique en Français. |
-| **🇷🇺 Русский** | [**`docs/ru/`**](ru/README.md) | **Полный комплект** | Полная техническая документация и руководства на русском языке. |
-| **🇨🇳 简体中文** | [**`docs/zh/`**](zh/README.md) | **完整技术套件** | 面向智能交通系统 (ITS) 工程师的完整中文技术文档库。 |
+| **🇪🇸 Español** | [**`docs/es/`**](es/README.md) | **Resumen Técnico** | Portal de documentación técnica en Español para operaciones internacionales. |
+| **🇫🇷 Français** | [**`docs/fr/`**](fr/README.md) | **Résumé Technique** | Portail de documentation technique en Français. |
+| **🇷🇺 Русский** | [**`docs/ru/`**](ru/README.md) | **Технический обзор** | Портал технической документации на русском языке. |
+| **🇨🇳 简体中文** | [**`docs/zh/`**](zh/README.md) | **技术文档概览** | 面向智能交通系统 (ITS) 工程师的中文技术文档门户。 |
 
 ---
 
@@ -39,12 +39,13 @@
 |---|---|---|---|---|---|---|
 | **Central Master MOC** | [**`en/svision_moc.md`**](en/svision_moc.md) | [**`pt-br/svision_moc.md`**](pt-br/svision_moc.md) | — | — | — | — |
 | **Core Architecture** | [**`en/architecture_overview.md`**](en/architecture_overview.md) | [**`pt-br/architecture_overview.md`**](pt-br/architecture_overview.md) | [**`es/architecture_overview.md`**](es/architecture_overview.md) | [**`fr/architecture_overview.md`**](fr/architecture_overview.md) | [**`ru/architecture_overview.md`**](ru/architecture_overview.md) | [**`zh/architecture_overview.md`**](zh/architecture_overview.md) |
+| **F.E.N.I.X. Supervisor** | [**`en/fenix_supervisor.md`**](en/fenix_supervisor.md) | [**`pt-br/fenix_supervisor.md`**](pt-br/fenix_supervisor.md) | — | — | — | — |
 | **GPU Inference Pipeline** | [**`en/gpu_pipeline.md`**](en/gpu_pipeline.md) | [**`pt-br/gpu_pipeline.md`**](pt-br/gpu_pipeline.md) | — | — | — | — |
 | **Vision Subsystem & NVDEC** | [**`en/vision_subsystem.md`**](en/vision_subsystem.md) | [**`pt-br/vision_subsystem.md`**](pt-br/vision_subsystem.md) | — | — | — | — |
 | **Zero-Port IPC (STDIO)** | [**`en/ipc_architecture.md`**](en/ipc_architecture.md) | [**`pt-br/ipc_architecture.md`**](pt-br/ipc_architecture.md) | — | — | — | — |
 | **Go Synapse Dispatcher** | [**`en/synapse_dispatcher_go.md`**](en/synapse_dispatcher_go.md) | [**`pt-br/synapse_dispatcher_go.md`**](pt-br/synapse_dispatcher_go.md) | — | — | — | — |
 | **Camera Lifecycle & SCS** | [**`en/camera_lifecycle.md`**](en/camera_lifecycle.md) | [**`pt-br/camera_lifecycle.md`**](pt-br/camera_lifecycle.md) | — | — | — | — |
-| **Data Egress & RAM Buffer** | [**`en/data_egress.md`**](en/data_egress.md) | [**`pt-br/data_egress.md`**](pt-br/data_egress.md) | — | — | — | — |
+| **Data Egress & MicroBatcher** | [**`en/data_egress.md`**](en/data_egress.md) | [**`pt-br/data_egress.md`**](pt-br/data_egress.md) | — | — | — | — |
 | **Desktop UI (Tauri v2)** | [**`en/desktop_ui_tauri.md`**](en/desktop_ui_tauri.md) | [**`pt-br/desktop_ui_tauri.md`**](pt-br/desktop_ui_tauri.md) | — | — | — | — |
 | **Security & LGPD Sovereignty**| [**`en/security_lgpd.md`**](en/security_lgpd.md) | [**`pt-br/security_lgpd.md`**](pt-br/security_lgpd.md) | — | — | — | — |
 | **API & IPC Reference** | [**`en/api_and_ipc_reference.md`**](en/api_and_ipc_reference.md) | [**`pt-br/api_and_ipc_reference.md`**](pt-br/api_and_ipc_reference.md) | — | — | — | — |
@@ -57,6 +58,6 @@
 <div align="center">
   <img src="assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
   <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
+  <i>Sovereign Workstation Vision Engineering • SVISION v1.2.0</i><br/>
+  <small>© 2026 Noxfort Systems • SPDX-License-Identifier: AGPL-3.0-or-later</small>
 </div>

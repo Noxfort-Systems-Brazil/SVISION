@@ -1,182 +1,69 @@
----
-tags: [svision, visao, nvdec, bytetrack, kalman, homografia, dbscan, brasil]
-aliases: [Subsistema de Visão, Visão Computacional, Decodificador de Fluxo]
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<div align="center">
+# Subsistema de Visão Computacional
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
-
-# Subsistema de Visão Computacional & Cinemática
-### Ingestão NVDEC, Rastreamento ByteTrack, Homografia e Mapeamento de Faixas
-*Noxfort Systems — A State Of Art Company*
-
-</div>
-
-⬅️ Voltar para a [Central Master MOC](svision_moc.md) | ⚡ Ver [Pipeline GPU](gpu_pipeline.md) | 🔄 Ver [Ciclo da Câmera](camera_lifecycle.md) | 📤 Ver [Egress de Dados](data_egress.md)
+O subsistema `src/vision/` e o modelo auxiliar `src/models/wavelet_ae_occ.py` respondem por decodificação RTSP/vídeo sem travamentos, rastreamento cinemático 2D, mapeamento de homografia e convergência autonômica de cena baseada exclusivamente em frames reais.
 
 ---
 
-## 1. Visão Geral
+## 1. Decodificador Contínuo com Thread Dedicada (`NvdecStreamDecoder`)
 
-O subsistema de visão computacional é o principal motor sensorial do **SVISION**. Ele orquestra toda a esteira desde a captura até a análise forense de tráfego — desde a ingestão acelerada de fluxos RTSP via silício dedicado **NVIDIA NVDEC**, passando pelo rastreamento cinemático com **ByteTrack** e estimativa de velocidade via homografia, até a compilação de polígonos de faixas na GPU.
+Implementado em `src/vision/stream_decoder.py`:
 
-```text
-┌──────────────────────────────────────────────────────────┐
-│              Subsistema de Visão Computacional           │
-│                                                          │
-│  ┌────────────────┐   ┌──────────────┐   ┌───────────┐  │
-│  │ Decodificador  │──►│  Rastreador  │──►│ Mapeador  │  │
-│  │ (NVDEC/CPU)    │   │  (ByteTrack) │   │ de Faixas │  │
-│  │                │   │  (Kalman)    │   │ (GPU PiP) │  │
-│  └────────────────┘   └──────────────┘   └───────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │              Analisador de Tráfego ASC             │  │
-│  │  (Orquestrador: SCS → Discovery → PRODUCTION)      │  │
-│  └────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────┘
-```
+- **Thread de Leitura Contínua em Background:** Ao chamar `connect_camera(camera_id, address)`, cada fluxo inicia uma thread dedicada que drena continuamente o buffer do OpenCV/FFmpeg/NVDEC, mantendo apenas o frame mais recente disponível para leitura via `read_latest_frame(camera_id)`. Isso elimina acúmulo de latência de buffer RTSP (*frame lag*) quando o pipeline roda a 12 FPS.
+- **Padronização Espacial (`max_dim = 720`):** Frames acima de `720px` são redimensionados proporcionalmente na etapa de captura para uniformizar custo de banda em RAM e extração periférica.
+- **Encerramento Limpo:** `disconnect_all()` sinaliza todas as threads de captura e libera os handles `VideoCapture` no shutdown do `StdioDaemon`.
 
 ---
 
-## 2. Ingestão de Vídeo Acelerada (`StreamDecoder`)
+## 2. Rastreador Cinemático Linear 2D (`KalmanTracker`)
 
-### Arquitetura de Decodificação Zero-Copy via NVDEC
-Localizado em `src/vision/stream_decoder.py`:
-- Configura o backend FFMPEG com `hwaccel=cuda` para entrega direta de quadros na memória da GPU sem tráfego redundante no barramento PCIe.
-- Buffer unitário (`CAP_PROP_BUFFERSIZE = 1`) para descartar acúmulo de atraso e garantir que a inferência atue estritamente sobre o quadro mais recente.
+Localizado em `src/vision/kalman_tracker.py` e instanciado isoladamente por câmera dentro do `PipelineSupervisor`:
 
-```python
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "rtsp_transport;tcp"          # Transporte confiável via TCP
-    "|hwaccel;cuda"               # Aceleração em hardware NVDEC
-    "|hwaccel_output_format;cuda" # Buffer direto de GPU sem cópia
-    "|fflags;nobuffer"            # Sem buffer interno
-    "|flags;low_delay"            # Descarte imediato de quadros atrasados
-)
-```
-
-### Fallback Automático para CPU
-Caso os drivers proprietários da NVIDIA estejam ausentes ou o codec não seja suportado pelo silício NVDEC, o decodificador comuta automaticamente para decodificação em software via CPU multi-thread, registrando o evento no log de diagnósticos e na interface desktop.
+- **Modelo de Estado 2D Linear (`[cx, cy, vx, vy]`):** Rastreia a posição da base central de cada objeto (`cx`, `cy`) e sua velocidade instantânea no plano da imagem (`vx`, `vy`) através de matrizes de transição cinemática linear com atualização por associação espacial.
+- **Predição em Oclusões Curtas:** Quando uma detecção falha temporariamente por poucos ciclos devido à passagem atrás de postes, placas ou veículos maiores, o filtro mantém a predição da trajetória antes de expirar o ID, entregando vetores de deslocamento limpos ao `FluidFlowEstimator`.
 
 ---
 
-## 3. Rastreamento Cinemático (`KalmanTracker`)
+## 3. Homografia Métrica e Mapeamento de Vias (`AutoLaneMapper`)
 
-### Associação em Dois Estágios via ByteTrack
-O rastreador (`src/vision/kalman_tracker.py`) associa detecções em duas etapas com matrizes de covariância de Filtro de Kalman:
+Implementado em `src/vision/lane_mapper.py`:
 
-```text
-Detecções da GPU (YOLO 11)
-        │
-        ▼
-┌───────────────────────────────────────┐
-│  Estágio 1: Alta Confiança            │
-│  confiança ≥ 0.5  │  IoU ≥ 0.3        │
-│  Associação de veículos em tráfego    │
-└───────────────┬───────────────────────┘
-                │
-        Trajetórias não casadas + detecções de baixa confiança
-                │
-                ▼
-┌───────────────────────────────────────┐
-│  Estágio 2: Baixa Confiança           │
-│  confiança < 0.5  │  IoU ≥ 0.2        │
-│  Recuperação de oclusões temporárias  │
-└───────────────┬───────────────────────┘
-                │
-        Detecções restantes não casadas
-                │
-                ▼
-┌───────────────────────────────────────┐
-│  Inicialização de Nova Trajetória     │
-│  Status provisório por 3 quadros      │
-└───────────────────────────────────────┘
-```
-
-### Compensação de Quadros Descartados (Fluxo Óptico GPU Kornia)
-Quando o governador elástico reduz dinamicamente a taxa de quadros para proteção térmica, o rastreador interpola os vetores de deslocamento dos veículos utilizando o algoritmo Farneback executado na GPU via biblioteca **Kornia**, mantendo os identificadores estáveis sem quebra de rastreamento.
+- **Operação em Modo Node-Level:** `AutoLaneMapper.has_topology(camera_id)` retorna `True` por padrão no modo macro de fluxo de tráfego, permitindo promoção imediata para `PRODUCTION` sem exigir desenho manual de polígonos prévio (arquivos opcionais JSON continuam suportados em `~/Documentos/Svision/topologies/<camera_id>.json`).
+- **Calibração Projetiva de 4 Pontos (`compute_homography_from_points`):**
+  - Recebe 4 ou mais pares correspondentes de coordenadas na imagem (`image_points`) e no solo em metros (`world_points`), vindos do modal de calibração da UI (`SlidersHorizontal`) ou do comando IPC `set_homography`.
+  - Calcula a matriz homogênea `3x3` armazenada em memória e persistida na coluna `homography_json` do SQLite.
+  - Quando ativa, `FluidFlowEstimator` projeta vetores para o plano métrico e define `"calibrated": true` no JSON de saída; caso contrário, informa `"calibrated": false`.
+- **Utilitários Geométricos Adicionais:** Contém helpers de modelagem de topologia (`_compile_topology` com clustering DBSCAN e `_sector_wedge_polygon`) para análises offline de setores e faixas.
 
 ---
 
-## 4. Mapeamento Espacial de Faixas (`LaneMapper`)
+## 4. Convergência Autonômica de Cena (`AutonomicSceneConvergence`)
 
-### Operação em Dois Modos
-1. **Modo Descoberta (Fase de Calibração)**:
-   - Coleta 200 vetores de rumo de veículos em movimento.
-   - Aplica agrupamento **DBSCAN** (`eps=15°`, `min_samples=10`).
-   - Classifica os grupos em abordagens cardeais (`approach_n`, `approach_s`, etc.).
-2. **Modo Produção (GPU Point-in-Polygon)**:
-   - Compila os polígonos de faixas em tensores na memória de vídeo (`.pt`).
-   - Executa teste vetorizado ponto-em-polígono para atribuir cada centroide de veículo à respectiva faixa de aproximação em menos de `0.05 ms`.
+Localizado em `src/vision/asc_analyzer.py` e acionado pelo `SCSOrchestrator` (`src/engine/scs_orchestrator.py`):
 
----
-
-## 5. Estimativa de Velocidade Física via Homografia
-
-Através da matriz de transformação projetiva $\mathbf{H}_{3 \times 3}$, as coordenadas do plano de imagem $(u, v)$ são convertidas no plano métrico do solo $(X, Y)$ em metros:
-
-$$\begin{bmatrix} X' \\ Y' \\ W' \end{bmatrix} = \mathbf{H} \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}, \quad X = \frac{X'}{W'}, \quad Y = \frac{Y'}{W'}$$
-
-A velocidade instantânea em $\text{km/h}$ é calculada pela derivada temporal da distância percorrida entre os quadros associados.
+- **Exigência Estrita de Frames Reais (Sem Fallback Sintético):** `_run_scs_calibration(camera_id)` consulta `stream_decoder.read_latest_frame(camera_id)` em ciclos de `0.05s` até o limite de `max_empty_polls = 240` (~12 segundos). Se a câmera permanecer offline ou for removida, a calibração é abortada sem alimentar ruído aleatório nos algoritmos.
+- **Métrica Composta de Estabilidade:**
+  $$\text{score} = \min\big(100.0,\ (\text{gmm\_score} \times 0.7) + (\text{flow\_stability} \times 100.0 \times 0.3)\big)$$
+  combinando estabilidade do subtrator de fundo MOG2 e consistência de fluxo óptico denso (`OpticalFlowAnalyzer`, `src/vision/optical_flow.py`).
+- **Critério Adaptativo de Promoção:** Compara o score com `config.PIPELINE_SCS_THRESHOLD` (`0` por padrão para entrada rápida em `PRODUCTION`; `98.0` para ambiente estrito), exigindo `required_stable = 30` frames estáveis quando `threshold >= 90.0` (ou `5` frames caso contrário).
 
 ---
 
-## 6. Wavelet AutoEncoder OCC — Detecção de Oclusão e Anomalias (`src/models/wavelet_ae_occ.py`)
+## 5. Autoencoder Wavelet para Oclusão (`WaveletAEOCC`)
 
-Para detectar violações ópticas (sabotagem da lente, oclusões físicas, cegueira por feixes luminosos) e colisões severas sem necessidade de conjuntos de dados previamente rotulados de acidentes, o SVISION implementa um **AutoEncoder Wavelet para Classificação de Uma Única Classe (WaveletAEOCC)**:
-
-```text
-Tensor de Quadro de Entrada (NCHW)
-            │
-            ▼
-┌───────────────────────────────────────┐
-│ Encoder (Sub-bandas DWT Simuladas)    │
-│ Conv2d(3 -> 16 -> 32 -> 64, stride=2) │
-│ Ativação LeakyReLU(0.2)               │
-└───────────────┬───────────────────────┘
-                │
-         Variedade Semântica Latente
-                │
-                ▼
-┌───────────────────────────────────────┐
-│ Decoder (DWT Inversa Simulada)        │
-│ ConvTranspose2d(64 -> 32 -> 16 -> 3)  │
-│ Faixa radiométrica Sigmoid [0.0, 1.0] │
-└───────────────┬───────────────────────┘
-                │
-                ▼
-┌───────────────────────────────────────┐
-│ Avaliação do Erro de Reconstrução     │
-│ Perda MSE: L_mse = ||x - x_rec||^2    │
-│ Tráfego nominal: L_mse < tau_occ      │
-│ Colisão/Oclusão: L_mse > tau_occ      │
-└───────────────────────────────────────┘
-```
-
-### Formulação Matemática de Anomalia
-A rede neural é treinada estritamente com fluxo de tráfego urbano nominal. Diante de perturbações fora da distribuição estatística (OOD):
-$$\mathcal{L}_{\text{MSE}}(x, \hat{x}) = \frac{1}{C \cdot H \cdot W} \sum_{c=1}^{C} \sum_{i=1}^{H} \sum_{j=1}^{W} \left( x_{c,i,j} - \hat{x}_{c,i,j} \right)^2$$
-
-- **Tráfego Nominal**: $\mathcal{L}_{\text{MSE}} \le \tau_{\text{occ}}$ (operação contínua).
-- **Incidente / Oclusão Crítica**: $\mathcal{L}_{\text{MSE}} > \tau_{\text{occ}}$ dispara evento de alarme imediato e atualiza o estado operacional do sensor na UI desktop.
+Em `src/models/wavelet_ae_occ.py`, o componente `WaveletAEOCC` fornece uma rede autoencoder baseada em decomposição wavelet (Haar 2D) voltada à detecção de oclusão visual severa, obstrução de lente ou degradação anômala da imagem da câmera.
 
 ---
 
-## Documentos Relacionados
+## 6. Documentação Relacionada
 
-- [🏠 Central Master MOC](svision_moc.md)
-- [🏗️ Visão Geral da Arquitetura](architecture_overview.md)
-- [📷 Ciclo de Vida da Câmera](camera_lifecycle.md)
-- [⚡ Pipeline de Inferência GPU](gpu_pipeline.md)
+- [Ciclo de Vida e Calibração](camera_lifecycle.md)
+- [Pipeline de GPU e Marchas](gpu_pipeline.md)
+- [Egress de Dados e Motor de Fluxo](data_egress.md)
+- [Referência de API e IPC](api_and_ipc_reference.md)
 
 ---
 
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Engenharia de Visão de Borda Soberana • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licenciado sob AGPLv3.</small>
-</div>
-
+*Documentação SVISION Core — v1.2.0 (2026-11-16)*

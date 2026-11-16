@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -24,8 +27,12 @@ Uses per-domain locks and O(1) Dict-based camera storage for high-frequency tele
 """
 
 import copy
+import logging
 import threading
-from typing import Dict, Any, List
+import time
+from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger("svision.state_manager")
 
 
 class StateManager:
@@ -45,6 +52,8 @@ class StateManager:
         self._engine_lock = threading.RLock()
         self._network_lock = threading.RLock()
         self._camera_lock = threading.RLock()
+        self._persistence: Optional[Any] = None
+        self._last_db_sample_ts: Dict[str, float] = {}
         
         # Base Application State Blueprint Configuration
         self.state: Dict[str, Any] = {
@@ -163,6 +172,76 @@ class StateManager:
                 cam.get("id", f"_unknown_{i}"): cam
                 for i, cam in enumerate(cameras)
             }
+        if self._persistence is not None:
+            try:
+                self._persistence.replace_cameras(cameras)
+            except Exception as e:
+                logger.warning("Failed persisting camera batch: %s", e)
+
+    def get_cameras(self) -> List[Dict[str, Any]]:
+        """Returns registered cameras as a deep-copied list of dicts."""
+        return self.get_topic_state("cameras")
+
+    def upsert_camera(self, cam: Dict[str, Any]) -> str:
+        """Adds or updates a single camera entry and persists if enabled."""
+        cam_id = cam.get("id", f"_auto_{id(cam)}")
+        with self._camera_lock:
+            cam_copy = dict(cam)
+            cam_copy["id"] = cam_id
+            cam_copy.setdefault("calibrated", cam_id in self.state["homography_matrices"])
+            cam_copy.setdefault("tuning_params", self.get_camera_params(cam_id))
+            self.state["cameras"][cam_id] = cam_copy
+        if self._persistence is not None:
+            try:
+                self._persistence.upsert_camera(cam_copy)
+            except Exception as e:
+                logger.warning("Failed persisting camera %s: %s", cam_id, e)
+        return cam_id
+
+    def remove_camera(self, camera_id: str) -> None:
+        """Removes a single camera entry and deletes it from persistence if enabled."""
+        with self._camera_lock:
+            self.state["cameras"].pop(camera_id, None)
+        if self._persistence is not None:
+            try:
+                self._persistence.delete_camera(camera_id)
+            except Exception as e:
+                logger.warning("Failed deleting camera %s from DB: %s", camera_id, e)
+
+    def attach_persistence(self, repo: Any, load_existing: bool = True) -> List[Dict[str, Any]]:
+        """Attaches SQLite repository and optionally hydrates persisted state into memory."""
+        self._persistence = repo
+        if not load_existing or repo is None:
+            return []
+        try:
+            loaded = repo.load_all()
+            with self._camera_lock:
+                for cid, h in loaded.get("homography_matrices", {}).items():
+                    self.state["homography_matrices"][cid] = h
+                for cid, params in loaded.get("camera_params", {}).items():
+                    self.state["camera_params"][cid] = params
+                for cam in loaded.get("cameras", []):
+                    cid = cam["id"]
+                    if cid not in self.state["cameras"]:
+                        self.state["cameras"][cid] = cam
+            return loaded.get("cameras", [])
+        except Exception as e:
+            logger.warning("Failed loading persisted state: %s", e)
+            return []
+
+    def record_traffic_sample(self, camera_id: str, density: float, avg_speed: float, min_interval_s: float = 5.0) -> None:
+        """Persists rate-limited macroscopic traffic samples to SQLite if attached."""
+        if self._persistence is None:
+            return
+        now = time.time()
+        last_ts = self._last_db_sample_ts.get(camera_id, 0.0)
+        if (now - last_ts) < min_interval_s:
+            return
+        self._last_db_sample_ts[camera_id] = now
+        try:
+            self._persistence.record_traffic_profile(camera_id, density, avg_speed)
+        except Exception as e:
+            logger.debug("Traffic profile DB insert skipped: %s", e)
             
     def append_recent_operation(self, op: Dict[str, str]):
         with self._engine_lock:
@@ -183,6 +262,13 @@ class StateManager:
         """Stores a 3x3 homography matrix for pixel-to-world transforms."""
         with self._camera_lock:
             self.state["homography_matrices"][camera_id] = matrix
+            if camera_id in self.state["cameras"]:
+                self.state["cameras"][camera_id]["calibrated"] = True
+        if self._persistence is not None:
+            try:
+                self._persistence.save_homography(camera_id, matrix)
+            except Exception as e:
+                logger.warning("Failed persisting homography for %s: %s", camera_id, e)
 
     def get_homography(self, camera_id: str):
         """Retrieves the homography matrix for a camera, or None."""
@@ -193,17 +279,24 @@ class StateManager:
     def get_camera_params(self, camera_id: str) -> Dict[str, float]:
         """Returns tuned inference parameters for a camera."""
         with self._camera_lock:
-            return self.state["camera_params"].get(camera_id, {
+            return copy.deepcopy(self.state["camera_params"].get(camera_id, {
                 "nms_threshold": 0.45,
                 "confidence_threshold": 0.35,
                 "exposure_compensation": 0.0,
                 "gamma": 1.0
-            })
+            }))
 
     def set_camera_params(self, camera_id: str, params: Dict[str, float]):
         """Overwrites a camera's tuning parameters."""
         with self._camera_lock:
-            self.state["camera_params"][camera_id] = params
+            self.state["camera_params"][camera_id] = dict(params)
+            if camera_id in self.state["cameras"]:
+                self.state["cameras"][camera_id]["tuning_params"] = dict(params)
+        if self._persistence is not None:
+            try:
+                self._persistence.save_camera_params(camera_id, params)
+            except Exception as e:
+                logger.warning("Failed persisting params for %s: %s", camera_id, e)
 
     # ── Camera Lifecycle State Machine ──────────────────────────────
 

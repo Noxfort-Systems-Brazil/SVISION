@@ -13,7 +13,7 @@ Currently, SVISION is in active production and continuous deployment. Only the l
 
 ## Reporting a Vulnerability
 
-**CRITICAL:** SVISION is deployed on edge industrial hardware managing real-time municipal traffic camera networks. Vulnerabilities in process isolation, Zero-Port IPC bridges, or Unix Domain Socket permissions could expose field hardware or compromise edge telemetry.
+**CRITICAL:** SVISION is deployed on dedicated high-performance workstations and local servers managing real-time municipal traffic camera networks. Vulnerabilities in process isolation, Zero-Port IPC bridges, or Unix Domain Socket permissions could expose host hardware or compromise local telemetry.
 
 **DO NOT** disclose vulnerabilities publicly on GitHub Issues.
 

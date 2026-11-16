@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -86,6 +89,7 @@ class SVisionConfig:
     SCHEDULER_MIN_BATCH: int = int(os.getenv("SVISION_SCHEDULER_MIN_BATCH", "4"))
     SCHEDULER_MAX_BATCH: int = int(os.getenv("SVISION_SCHEDULER_MAX_BATCH", "32"))
     SCHEDULER_DEFAULT_BATCH: int = int(os.getenv("SVISION_SCHEDULER_DEFAULT_BATCH", "20"))
+    TRT_MAX_BATCH: int = int(os.getenv("SVISION_TRT_MAX_BATCH", "16"))
     # On-demand VRAM model paging (Nano always resident, others dynamic)
     GEARBOX_ON_DEMAND_VRAM: bool = os.getenv("SVISION_GEARBOX_ON_DEMAND", "True").lower() == "true"
     GEARBOX_HEAVY_DWELL_SECONDS: float = float(os.getenv("SVISION_HEAVY_DWELL_SECONDS", "30.0"))

@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -71,9 +74,7 @@ class CameraCommandHandler:
             responder(False, error="Payload must be a camera object")
             return
 
-        cam_id = new_cam.get("id", f"_auto_{id(new_cam)}")
-        with state_manager._camera_lock:
-            state_manager.state["cameras"][cam_id] = new_cam
+        cam_id = state_manager.upsert_camera(new_cam)
 
         loop = self._get_loop()
         if loop and loop.is_running():
@@ -99,8 +100,7 @@ class CameraCommandHandler:
 
         from src.vision.stream_decoder import stream_decoder
         stream_decoder.disconnect_camera(cam_id)
-        with state_manager._camera_lock:
-            state_manager.state["cameras"].pop(cam_id, None)
+        state_manager.remove_camera(cam_id)
 
         loop = self._get_loop()
         if loop and loop.is_running():
@@ -154,6 +154,68 @@ class CameraCommandHandler:
             logger.info(f"[Synapse] Host configuration dynamically updated to {config.SYNAPSE_HOST} and saved to settings.ini")
         responder(True, result={"host": config.SYNAPSE_HOST, "base_port": config.SYNAPSE_BASE_PORT})
 
+    def handle_set_homography(self, msg: IpcMessage, responder: Callable) -> None:
+        payload = msg.payload or {}
+        if not isinstance(payload, dict):
+            responder(False, error="Payload must be an object")
+            return
+
+        cam_id = payload.get("camera_id") or payload.get("id")
+        if not cam_id:
+            responder(False, error="Missing camera_id")
+            return
+
+        matrix = payload.get("matrix")
+        if matrix is None:
+            image_points = payload.get("image_points")
+            world_points = payload.get("world_points")
+            from src.vision.lane_mapper import AutoLaneMapper
+            matrix = AutoLaneMapper.compute_homography_from_points(image_points, world_points)
+            if matrix is None:
+                responder(False, error="Invalid or collinear calibration point pairs (need >= 4)")
+                return
+        else:
+            import numpy as np
+            try:
+                H_arr = np.array(matrix, dtype=np.float64).reshape(3, 3)
+                if abs(float(np.linalg.det(H_arr))) < 1e-12:
+                    responder(False, error="Homography matrix is singular")
+                    return
+                matrix = H_arr.tolist()
+            except Exception as ex:
+                responder(False, error=f"Invalid 3x3 homography matrix: {ex}")
+                return
+
+        state_manager.set_homography(str(cam_id), matrix)
+        self._emit_event("cameras", state_manager.get_topic_state("cameras"))
+        responder(True, result={"camera_id": cam_id, "matrix": matrix, "calibrated": True})
+
+    def handle_update_camera_params(self, msg: IpcMessage, responder: Callable) -> None:
+        payload = msg.payload or {}
+        if not isinstance(payload, dict):
+            responder(False, error="Payload must be an object")
+            return
+
+        cam_id = payload.get("camera_id") or payload.get("id")
+        params_in = payload.get("params")
+        if not cam_id or not isinstance(params_in, dict):
+            responder(False, error="Missing camera_id or params dict")
+            return
+
+        merged = state_manager.get_camera_params(str(cam_id))
+        for k in ("confidence_threshold", "nms_threshold", "exposure_compensation", "gamma", "nominal_direction"):
+            if k in params_in and params_in[k] is not None:
+                val = float(params_in[k])
+                if k in ("confidence_threshold", "nms_threshold"):
+                    val = max(0.05, min(0.99, val))
+                merged[k] = val
+        if "approach" in params_in and params_in["approach"]:
+            merged["approach"] = str(params_in["approach"]).strip()
+
+        state_manager.set_camera_params(str(cam_id), merged)
+        self._emit_event("cameras", state_manager.get_topic_state("cameras"))
+        responder(True, result={"camera_id": cam_id, "params": merged})
+
 
 class SystemCommandHandler:
     """
@@ -173,6 +235,8 @@ class SystemCommandHandler:
             "network_stats": state_manager.get_topic_state("network_stats"),
             "synapse_ports": state_manager.get_topic_state("synapse_ports"),
             "synapse_host": config.SYNAPSE_HOST,
+            "homography_matrices": state_manager.get_topic_state("homography_matrices"),
+            "camera_params": state_manager.get_topic_state("camera_params"),
         }
 
 
@@ -193,4 +257,6 @@ def register_default_command_handlers(
     router.register("remove_camera", camera_handler.handle_remove_camera)
     router.register("set_cameras", camera_handler.handle_set_cameras)
     router.register("update_synapse_config", camera_handler.handle_update_synapse_config)
+    router.register("set_homography", camera_handler.handle_set_homography)
+    router.register("update_camera_params", camera_handler.handle_update_camera_params)
     logger.debug("[IPC Handlers] Default command handlers registered successfully.")

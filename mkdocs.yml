@@ -1,13 +1,15 @@
 # ==============================================================================
 # SVISION (Synapse Vision) — MkDocs Configuration (Material for MkDocs)
-# Sovereign Edge AI Platform for Real-Time Urban Traffic Analysis
+# Sovereign AI Workstation Platform for Real-Time Urban Traffic Analysis
 # Copyright (C) 2026 — Noxfort Systems
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
 # ==============================================================================
 
 site_name: "SVISION (Synapse Vision) — Technical Documentation"
-site_description: "Internal technical documentation for SVISION (Synapse Vision) — sovereign edge vision & traffic intelligence platform."
+site_description: "Internal technical documentation for SVISION (Synapse Vision) — sovereign workstation vision & traffic intelligence platform."
 site_author: "Gabriel Moraes — Noxfort Systems"
-copyright: "Copyright &copy; 2026 — Noxfort Systems"
+copyright: "Copyright &copy; 2026 &mdash; Noxfort Systems &bull; SPDX-License-Identifier: AGPL-3.0-or-later"
 
 # Exclude conflicting GitHub folder readme from MkDocs build
 exclude_docs: |
@@ -97,8 +99,9 @@ plugins:
 nav:
   - Overview: index.md
   - Master MOC: SVISION_MOC.md
-  - Core Architecture & Edge:
+  - Core Architecture & Systems:
     - System Architecture: architecture-overview.md
+    - F.E.N.I.X. Self-Healing: fenix-supervisor.md
     - Zero-Port IPC: ipc-architecture.md
     - API & IPC Reference: api-and-ipc-reference.md
     - Security & LGPD: security-lgpd.md
@@ -114,12 +117,13 @@ nav:
     - Configuration & SQLite: configuration-reference.md
   - Operations & QA:
     - Development & Testing: development-testing.md
-    - Edge Deployment: deployment-operations.md
+    - Workstation Deployment: deployment-operations.md
   - Multi-Language Hubs:
     - 🇺🇸 English:
       - Hub: en/README.md
       - Master MOC: en/svision_moc.md
       - System Architecture: en/architecture_overview.md
+      - F.E.N.I.X. Self-Healing: en/fenix_supervisor.md
       - GPU Pipeline: en/gpu_pipeline.md
       - Vision Subsystem: en/vision_subsystem.md
       - Zero-Port IPC: en/ipc_architecture.md
@@ -131,11 +135,12 @@ nav:
       - API & IPC Reference: en/api_and_ipc_reference.md
       - Configuration: en/configuration_reference.md
       - Development & Testing: en/development_testing.md
-      - Edge Deployment: en/deployment_operations.md
+      - Workstation Deployment: en/deployment_operations.md
     - 🇧🇷 Português (Brasil):
       - Central: pt-br/README.md
       - Master MOC: pt-br/svision_moc.md
       - Arquitetura do Sistema: pt-br/architecture_overview.md
+      - Supervisor F.E.N.I.X.: pt-br/fenix_supervisor.md
       - Pipeline de Inferência GPU: pt-br/gpu_pipeline.md
       - Subsistema de Visão: pt-br/vision_subsystem.md
       - Arquitetura IPC Zero-Port: pt-br/ipc_architecture.md
@@ -147,7 +152,7 @@ nav:
       - Referência de API e IPC: pt-br/api_and_ipc_reference.md
       - Referência de Configuração: pt-br/configuration_reference.md
       - Desenvolvimento & Testes: pt-br/development_testing.md
-      - Implantação & Operações: pt-br/deployment_operations.md
+      - Implantação em Workstation: pt-br/deployment_operations.md
     - 🇫🇷 Français: fr/README.md
     - 🇪🇸 Español: es/README.md
     - 🇷🇺 Русский: ru/README.md

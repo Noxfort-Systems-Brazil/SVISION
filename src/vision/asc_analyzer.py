@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -110,89 +113,86 @@ class AutonomicSceneConvergence:
     async def start_calibration(self, camera_id: str):
         """
         Full camera onboarding: SCS calibration → topology discovery → PRODUCTION.
-        
-        1. Checks for existing topology file → if found, skip to PRODUCTION
-        2. Runs GMM/optical flow convergence (SCS ≥ 98%)
-        3. Enters Discovery mode (trajectory collection + DBSCAN)
-        4. Compiles topology → saves .pt file → enters PRODUCTION
+        Always validates background convergence on real frames before unlocking PRODUCTION.
         """
         from src.vision.lane_mapper import lane_mapper
-        
-        # ── FAST PATH: If topology already exists, skip straight to PRODUCTION ──
-        if lane_mapper.has_topology(camera_id):
-            logger.info(f"[{camera_id}] Topology cache found. Loading directly into PRODUCTION...")
-            if lane_mapper.load_topology(camera_id):
-                state_manager.set_camera_lifecycle(camera_id, "PRODUCTION")
-                state_manager.append_recent_operation({
-                    "id": f"#LC-{camera_id[:4]}",
-                    "name": "Topology Cache Hit",
-                    "status": "Completed"
-                })
-                # Still need SCS calibration for background model
-                await self._run_scs_calibration(camera_id)
-                return
-        
-        # ── FULL ONBOARDING ─────────────────────────────────────────
-        logger.info(f"[{camera_id}] No topology cache. Starting full onboarding sequence...")
+
         state_manager.set_camera_lifecycle(camera_id, "SCS_CALIBRATION")
-        
-        # Phase 1: SCS
-        await self._run_scs_calibration(camera_id)
-        
-        # Phase 2: Discovery + Compilation
+        converged = await self._run_scs_calibration(camera_id)
+        if not converged:
+            logger.warning(f"[{camera_id}] SCS calibration aborted before convergence (offline or removed).")
+            return
+
+        if lane_mapper.has_topology(camera_id) and lane_mapper.load_topology(camera_id):
+            logger.info(f"[{camera_id}] Topology ready. Promoting camera to PRODUCTION.")
+            state_manager.set_camera_lifecycle(camera_id, "PRODUCTION")
+            state_manager.append_recent_operation({
+                "id": f"#LC-{camera_id[:4]}",
+                "name": "Topology Ready",
+                "status": "Completed"
+            })
+            return
+
         await self._run_discovery(camera_id)
-    
-    async def _run_scs_calibration(self, camera_id: str):
-        """Phase 1: GMM + Optical Flow convergence until SCS ≥ 98%."""
-        logger.info(f"[{camera_id}] Initiating autonomous scene convergence...")
-        self.calibrating_cameras.append(camera_id)
-        
+
+    async def _run_scs_calibration(self, camera_id: str, max_empty_polls: int = 240) -> bool:
+        """Phase 1: GMM + Optical Flow convergence on live decoded frames."""
+        from src.common.config import config
+        from src.vision.stream_decoder import stream_decoder
+
+        logger.info(f"[{camera_id}] Initiating autonomous scene convergence on live video...")
+        if camera_id not in self.calibrating_cameras:
+            self.calibrating_cameras.append(camera_id)
+
+        threshold = float(getattr(config, "PIPELINE_SCS_THRESHOLD", 0.0))
+        required_stable = 30 if threshold >= 90.0 else 5
         current_scs = 0.0
         consecutive_stable_frames = 0
         prev_gray = None
+        empty_polls = 0
 
-        from src.vision.stream_decoder import stream_decoder
-        
-        while consecutive_stable_frames < 30:
-            frame = stream_decoder.read_latest_frame(camera_id)
-            
-            if frame is None:
-                frame = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
-            
-            gmm_score = self._feed_calibration_frame(camera_id, frame)
-            
-            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            flow_stability = 1.0
-            if prev_gray is not None:
-                flow_stability = self._compute_flow_stability(prev_gray, curr_gray)
-            prev_gray = curr_gray
-            
-            current_scs = (gmm_score * 0.7) + (flow_stability * 100.0 * 0.3)
-            current_scs = min(100.0, current_scs)
-            
-            if current_scs >= 98.0:
-                consecutive_stable_frames += 1
-            else:
-                consecutive_stable_frames = 0
+        try:
+            while consecutive_stable_frames < required_stable:
+                if camera_id not in state_manager.state.get("cameras", {}):
+                    return False
 
-            cameras = state_manager.get_topic_state("cameras")
-            if cameras:
-                for c in cameras:
-                    if c.get("id") == camera_id:
-                        c["scs"] = round(current_scs, 1)
-                        break
-                state_manager.set_cameras(cameras)
-            
-            await asyncio.sleep(0.1)
-            
-        logger.info(f"[{camera_id}] SCS converged (≥ 98%). Background model stable.")
-        self.calibrating_cameras.remove(camera_id)
-        
-        state_manager.append_recent_operation({
-            "id": f"#ASC-{camera_id[:4]}",
-            "name": "Scene Convergence",
-            "status": "Completed"
-        })
+                frame = stream_decoder.read_latest_frame(camera_id)
+                if frame is None:
+                    empty_polls += 1
+                    if empty_polls >= max_empty_polls:
+                        return False
+                    await asyncio.sleep(0.25)
+                    continue
+
+                empty_polls = 0
+                gmm_score = self._feed_calibration_frame(camera_id, frame)
+
+                curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                flow_stability = 1.0
+                if prev_gray is not None:
+                    flow_stability = self._compute_flow_stability(prev_gray, curr_gray)
+                prev_gray = curr_gray
+
+                current_scs = min(100.0, (gmm_score * 0.7) + (flow_stability * 100.0 * 0.3))
+
+                if current_scs >= threshold:
+                    consecutive_stable_frames += 1
+                else:
+                    consecutive_stable_frames = 0
+
+                state_manager.update_camera_live_stats(camera_id, scs=round(current_scs, 1))
+                await asyncio.sleep(0.1)
+
+            logger.info(f"[{camera_id}] SCS converged ({current_scs:.1f}% >= {threshold:.1f}%). Background model stable.")
+            state_manager.append_recent_operation({
+                "id": f"#ASC-{camera_id[:4]}",
+                "name": "Scene Convergence",
+                "status": "Completed"
+            })
+            return True
+        finally:
+            if camera_id in self.calibrating_cameras:
+                self.calibrating_cameras.remove(camera_id)
 
     # ── Phase 2: Topology Discovery ─────────────────────────────────
 

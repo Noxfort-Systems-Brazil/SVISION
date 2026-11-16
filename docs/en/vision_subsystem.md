@@ -1,8 +1,8 @@
 ---
-title: "Computer Vision Subsystem — NVDEC, ByteTrack, LaneMapper & ASC"
-tags: [svision, vision, nvdec, bytetrack, kalman, homography, dbscan, architecture]
+title: "Computer Vision Subsystem — Threaded NVDEC, 2D Kalman ByteTrack, LaneMapper & ASC"
+tags: [svision, vision, nvdec, bytetrack, kalman, homography, optical-flow, wavelet, architecture]
 aliases: ["Vision Subsystem", "Computer Vision", "StreamDecoder"]
-updated: 2026-09-05
+updated: 2026-11-16
 category: "Computer Vision & GPU Acceleration"
 ---
 
@@ -19,41 +19,49 @@ category: "Computer Vision & GPU Acceleration"
 
 ## Overview
 
-The computer vision subsystem is the primary sensory engine of SVision. It orchestrates the entire capture-to-analytics pipeline — from hardware RTSP ingestion via **NVIDIA NVDEC**, to kinematic object tracking with **ByteTrack**, homography-based velocity estimation, and GPU-compiled lane topologies.
+The computer vision subsystem is the primary sensory engine of SVision. It orchestrates capture, kinematic filtering, metric speed projection, and anomaly detection — from hardware RTSP ingestion via **NVIDIA NVDEC** background reader threads, to linear 2D Kalman tracking with **ByteTrack**, 4-point planar homography, and **WaveletAEOCC** structural occlusion checks.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Vision Subsystem                       │
-│                                                          │
-│  ┌────────────────┐   ┌──────────────┐   ┌───────────┐  │
-│  │ StreamDecoder  │──►│KalmanTracker │──►│LaneMapper │  │
-│  │ (NVDEC/CPU)    │   │ (ByteTrack)  │   │(DBSCAN+   │  │
-│  │                │   │              │   │ GPU PiP)  │  │
-│  └────────────────┘   └──────────────┘   └───────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │              ASC Analyzer                          │  │
-│  │  (Orchestrator: SCS → Discovery → PRODUCTION)      │  │
-│  └────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                        Vision Subsystem                        │
+│                                                                │
+│  ┌──────────────────┐   ┌──────────────────┐   ┌────────────┐  │
+│  │ NvdecStream      │──►│ KalmanPredictive │──►│ AutoLane   │  │
+│  │ Decoder          │   │ Tracker (2D KF   │   │ Mapper     │  │
+│  │ (Reader Thread   │   │ + ByteTrack +    │   │ (Homography│  │
+│  │  NVDEC / CPU)    │   │  Kornia Flow)    │   │  + Node)   │  │
+│  └──────────────────┘   └──────────────────┘   └────────────┘  │
+│                                                                │
+│  ┌─────────────────────────────┐  ┌─────────────────────────┐  │
+│  │ ASC Analyzer                │  │ WaveletAEOCC            │  │
+│  │ (Live-Frame SCS → Node Mode)│  │ (Occlusion / Anomaly)   │  │
+│  └─────────────────────────────┘  └─────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 1. StreamDecoder — NVDEC Video Ingestion (`src/vision/stream_decoder.py`)
+## 1. StreamDecoder — Threaded NVDEC Video Ingestion (`src/vision/stream_decoder.py`)
 
-### Zero-Copy Hardware Decoding Architecture
+### Non-Blocking Reader-Thread Architecture
 
-`NvdecStreamDecoder` establishes video capture pipelines optimized for zero-latency frame ingestion:
+`NvdecStreamDecoder` mounts OpenCV/FFMPEG captures inside `asyncio.to_thread` (serialized around environment variables with `_env_lock`) and spawns a dedicated daemon reader thread (`svision_dec_<cam_id>`) for real `cv2.VideoCapture` streams:
 
 ```
-RTSP Camera → FFMPEG (hwaccel=cuda) → OpenCV VideoCapture → BGR Frame
-                                                              │
-                                                      ┌───────┴───────┐
-                                                      ▼               ▼
-                                               read_latest_frame  read_latest_frame_tensor
-                                               (NumPy BGR)        (PyTorch NCHW GPU)
+RTSP Camera → FFMPEG (hwaccel=cuda) → Reader Thread (_reader_loop)
+                                              │ continuously drains frames
+                                              ▼
+                                 Single-Slot latest_frame (frame_lock)
+                                              │
+                              ┌───────────────┴───────────────┐
+                              ▼                               ▼
+                       read_latest_frame               read_latest_frame_tensor
+                   (BGR NumPy, max_dim=720)              (PyTorch CHW GPU Tensor)
 ```
+
+- **Continuous Buffer Drainage**: `_reader_loop` continuously reads from `cap.read()`, replacing `stream["latest_frame"]` under `frame_lock` and incrementing `frames_received` (or `dropped` on failure). Inference ticks always read the freshest available frame with zero stale RTSP backlog.
+- **Intelligent Sub-Stream Clamping**: `read_latest_frame(camera_id, max_dim=720)` downscales frames exceeding `720px` on the largest edge (`cv2.INTER_AREA`) to constrain RAM/VRAM overhead.
+- **Clean Resource Shutdown**: `disconnect_camera()` signals `stop_event`, joins the reader thread (`timeout=1.0s`), and releases capture handles; `disconnect_all()` cleans up all active streams during daemon teardown.
 
 ### Low-Latency FFMPEG Configuration
 
@@ -69,18 +77,17 @@ cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Strictly unit-size frame buffer
 ```
 
 ### Automatic CPU Fallback
-If NVIDIA proprietary drivers are absent or the camera codec is unsupported by the NVDEC silicon:
-1. `hwaccel;cuda` flags are automatically removed.
-2. The decoder switches to multi-threaded CPU software decoding.
-3. A diagnostic warning is logged and reflected in the [Desktop UI](desktop_ui_tauri.md).
+If NVIDIA proprietary drivers are absent or the camera codec is unsupported by NVDEC:
+1. `_open_capture()` retries without `hwaccel;cuda` flags (`rtsp_transport;tcp|fflags;nobuffer|flags;low_delay`).
+2. `hw_accel` is recorded as `False`, seamlessly keeping the reader-thread pipeline active on CPU software decoding.
 
 ---
 
-## 2. KalmanTracker — Kinematic Tracking (`src/vision/kalman_tracker.py`)
+## 2. KalmanTracker — Linear 2D Kalman & ByteTrack (`src/vision/kalman_tracker.py`)
 
-### ByteTrack Two-Stage Association
+### ByteTrack Two-Stage Association & 2D Constant-Velocity Kalman Filter
 
-The tracker implements two-stage **ByteTrack** association with Kalman Filter kinematic covariance matrices:
+Each camera receives an **isolated** `KalmanPredictiveTracker` instance created via `create_tracker()` in `PipelineSupervisor`.
 
 ```
 GPU Detections (YOLO 11)
@@ -89,7 +96,7 @@ GPU Detections (YOLO 11)
 ┌───────────────────────────────────────┐
 │  Stage 1: High-Confidence Matching    │
 │  confidence ≥ 0.5  │  IoU ≥ 0.3       │
-│  Greedy IoU association assignment    │
+│  Greedy IoU assignment + KF update    │
 └───────────────┬───────────────────────┘
                 │
         Unmatched tracks + low-conf detections
@@ -105,69 +112,46 @@ GPU Detections (YOLO 11)
                 │
                 ▼
 ┌───────────────────────────────────────┐
-│  Track Initialization                 │
-│  Tentative for 3 consecutive frames   │
+│  Track Initialization & Occlusion Gap │
+│  • Confirmed after 3 hits             │
+│  • Predicts missed frames if          │
+│    confirmed & time_since_update <= 2 │
 └───────────────────────────────────────┘
 ```
 
-### Dropped Frame Compensation (Kornia GPU Optical Flow)
+- **Linear 2D Kalman State (`_kf_states`)**: Tracks state vector $\mathbf{x} = [x, y, v_x, v_y]^T$ with constant-velocity transition matrix $\mathbf{F}$, position observation matrix $\mathbf{H}$, process noise $\mathbf{Q} = \text{diag}(0.5, 0.5, 2.0, 2.0)$, and measurement noise $\mathbf{R} = \text{diag}(4.0, 4.0)$.
+- **Velocity Propagation**: Every matched detection returned by `associate_detections()` receives its smoothed Kalman `velocity` vector `[vx, vy]`, feeding `FluidFlowEstimator` directly.
+- **Short Occlusion Gap Prediction**: Confirmed tracks that miss up to 2 consecutive frames automatically call `predict_missed_frame()` to bridge transient occlusions without dropping tracks prematurely (tracks expire after `max_age = 30`).
 
-When the [Elastic Governor](gpu_pipeline.md) down-samples frame rates under thermal throttling, the tracker interpolates intermediate displacements using Farneback optical flow accelerated on GPU via **Kornia**:
+### Dropped Frame Compensation (Kornia GPU Optical Flow — `src/vision/optical_flow.py`)
 
-```python
-flow = kornia.geometry.optical_flow.farneback(
-    prev_gray, curr_gray,
-    num_pyramid_levels=3,
-    pyramid_scale=0.5,
-    window_size=15,
-    num_iterations=3,
-    poly_n=5,
-    poly_sigma=1.2
-)
-roi_flow = flow[:, :, by:by2, bx:bx2]
-avg_flow_x = roi_flow[:, 0].mean().item()
-```
+When GPU frame tensors are supplied to `predict_missed_frame()`, `OpticalFlowPredictor` runs dense Farneback optical flow on GPU via **Kornia** over the bounding box region to refine `[vx, vy]`.
 
 ---
 
-## 3. LaneMapper — Topology Mapping (`src/vision/lane_mapper.py`)
+## 3. AutoLaneMapper — Node-Level Resolution & Homography (`src/vision/lane_mapper.py`)
 
-### Dual-Mode Operation
+### Node-Level Approach Mapping
+- Routes detections to the camera's configured `approach` tuning parameter or `"node"` by default, delegating macro-graph intersection routing upstream to **SYNAPSE_CORE** / **CARINA_CORE**.
+- `has_topology()` defaults to `True` for zero-polygon Node-Level operation while preserving optional JSON topology load/save at `~/Documentos/Svision/topologies/<camera_id>.json`.
 
-#### Discovery Mode (CPU - Onboarding Phase)
-1. During sensor calibration ([`camera_lifecycle.md`](camera_lifecycle.md)), collects 200 vehicle trajectory heading vectors.
-2. Runs **DBSCAN clustering** (`eps=15°`, `min_samples=10`).
-3. Groups headings into cardinal direction approaches (`approach_n`, `approach_se`, etc.).
-
-#### Production Mode (GPU - Continuous Execution)
-1. Loads the compiled `.pt` topology tensor directly into GPU VRAM.
-2. Performs vectorized **Point-in-Polygon (PiP)** classification using cross-products between polygon vertices and vehicle centroids:
-
-```python
-# Tensor Core winding number test via vector cross-products
-edges = torch.roll(polygon, -1, dims=0) - polygon
-points_rel = point.unsqueeze(0) - polygon
-cross = edges[:, 0] * points_rel[:, 1] - edges[:, 1] * points_rel[:, 0]
-is_inside = bool(torch.all(cross >= 0) or torch.all(cross <= 0))
-```
-
-### Real-World Homography Speed Calculation
-
-Vehicle velocities in km/h are estimated by projecting 2D pixel coordinates to real-world metric space using a $3 \times 3$ planar homography matrix:
+### 4-Point Calibration & Real-World Homography Speed Calculation
+`AutoLaneMapper.compute_homography_from_points(image_points, world_points)` computes an invertible $3 \times 3$ planar transformation using `cv2.findHomography` from $\ge 4$ non-collinear pixel-to-meter correspondences (verifying $|\det(\mathbf{H})| \ge 10^{-12}$):
 
 $$\begin{bmatrix} X_w \\ Y_w \\ 1 \end{bmatrix} \sim \mathbf{H} \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
 
 $$\text{Distance} = \sqrt{(X_2 - X_1)^2 + (Y_2 - Y_1)^2} \quad (\text{meters})$$
-$$\text{Speed} = \text{Distance} \times \text{FPS} \times 3.6 \quad (\text{km/h})$$
+$$\text{Speed} = \text{Distance} \times \text{FPS}_{\text{eff}} \times 3.6 \quad (\text{km/h})$$
+
+`FluidFlowEstimator` supplies real tick FPS ($\text{FPS}_{\text{eff}} = 1 / \Delta t$) from `CameraAgent` to `compute_world_speed()` when homography is calibrated, falling back to uncalibrated pixel displacement scaling otherwise.
 
 ---
 
 ## 4. ASC Analyzer — Autonomic Scene Convergence (`src/vision/asc_analyzer.py`)
 
-Supervises scene readiness before authorizing production traffic metrics:
-1. **SCS Calibration**: Evaluates MOG2 background stability with CLAHE normalization + Farneback optical flow stability until reaching 98% across 30 consecutive frames.
-2. **Lane Discovery**: Triggers DBSCAN clustering once 200 samples are accumulated.
-3. **Persistence**: Saves compiled topology tensors to `~/Documentos/Svision/topology/<cam_id>.pt`.
+Supervises camera readiness strictly on **real decoded frames** (no synthetic random noise frames):
+1. **SCS Calibration**: Waits for live frames from `stream_decoder.read_latest_frame(camera_id)` (aborting cleanly if removed or offline after `max_empty_polls=240`). Evaluates CLAHE-normalized MOG2 foreground stability + Farneback optical flow stability until reaching `config.PIPELINE_SCS_THRESHOLD` across `30` consecutive frames (when threshold $\ge 90.0$) or `5` frames (development/testing default `0`).
+2. **Topology Check & Node-Level Promotion**: Checks `lane_mapper.has_topology()` / `load_topology()` and transitions the camera into `PRODUCTION` via `_run_discovery()` (retaining DBSCAN `_compile_topology()` / `_sector_wedge_polygon()` utilities).
 
 For step-by-step lifecycle details, see [Camera Lifecycle](camera_lifecycle.md).
 
@@ -175,7 +159,7 @@ For step-by-step lifecycle details, see [Camera Lifecycle](camera_lifecycle.md).
 
 ## 5. Wavelet AutoEncoder OCC — Anomaly & Occlusion Detection (`src/models/wavelet_ae_occ.py`)
 
-To detect visual camera tampering, physical lens occlusions, and severe vehicular collisions without requiring labeled accident datasets, SVISION implements a **Wavelet AutoEncoder for One-Class Classification (WaveletAEOCC)**:
+To detect visual camera tampering, physical lens occlusions, and severe vehicular collisions without requiring labeled accident datasets, SVISION includes **WaveletAEOCC**:
 
 ```text
 Incoming Frame Tensor (NCHW)
@@ -206,11 +190,7 @@ Incoming Frame Tensor (NCHW)
 ```
 
 ### Anomaly Formulation
-The network is trained strictly on standard urban traffic footage. When an out-of-distribution event occurs:
 $$\mathcal{L}_{\text{MSE}}(x, \hat{x}) = \frac{1}{C \cdot H \cdot W} \sum_{c=1}^{C} \sum_{i=1}^{H} \sum_{j=1}^{W} \left( x_{c,i,j} - \hat{x}_{c,i,j} \right)^2$$
-
-- **Normative Traffic**: $\mathcal{L}_{\text{MSE}} \le \tau_{\text{occ}}$ (nominal state).
-- **Incident / Occlusion**: $\mathcal{L}_{\text{MSE}} > \tau_{\text{occ}}$ generates an automatic alarm event and flags the stream state in the desktop UI.
 
 ---
 
@@ -228,6 +208,6 @@ $$\mathcal{L}_{\text{MSE}}(x, \hat{x}) = \frac{1}{C \cdot H \cdot W} \sum_{c=1}^
 <div align="center">
   <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
   <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
+  <i>Sovereign Workstation Vision Engineering • SVISION v1.2.0</i><br/>
+  <small>© 2026 Noxfort Systems • SPDX-License-Identifier: AGPL-3.0-or-later</small>
 </div>

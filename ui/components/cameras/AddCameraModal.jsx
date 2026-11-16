@@ -2,6 +2,9 @@
  * SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
  * Copyright (C) 2026 Noxfort Systems
  *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 Noxfort Systems
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
  * published by the Free Software Foundation, either version 3 of the
@@ -32,12 +35,14 @@ export function AddCameraModal({ isOpen, onClose, onAddCamera }) {
     const [formAddress, setFormAddress] = useState('');
     const [formSensorId, setFormSensorId] = useState('');
     const [formSynapsePort, setFormSynapsePort] = useState('');
+    const [validationError, setValidationError] = useState('');
 
     const resetForm = () => {
         setFormName('');
         setFormAddress('');
         setFormSensorId('');
         setFormSynapsePort('');
+        setValidationError('');
     };
 
     const handleClose = () => {
@@ -47,11 +52,31 @@ export function AddCameraModal({ isOpen, onClose, onAddCamera }) {
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (!formName.trim() || !formAddress.trim()) return;
+        const trimmedName = formName.trim();
+        const trimmedAddr = formAddress.trim();
+        if (!trimmedName || !trimmedAddr) {
+            setValidationError('Preencha o nome e o endereço da câmera.');
+            return;
+        }
 
+        const isValidScheme = /^(rtsp|rtsps|http|https):\/\/.+/i.test(trimmedAddr) || /^(\/dev\/|\d+$|.+\.(mp4|mkv|avi)$)/i.test(trimmedAddr);
+        if (!isValidScheme) {
+            setValidationError('Endereço inválido. Use rtsp://, http://, /dev/video* ou índice de dispositivo.');
+            return;
+        }
+
+        if (formSynapsePort) {
+            const p = parseInt(formSynapsePort, 10);
+            if (Number.isNaN(p) || p < 1024 || p > 65535) {
+                setValidationError('A porta TCP Synapse deve estar entre 1024 e 65535 (ou vazio para automática).');
+                return;
+            }
+        }
+
+        setValidationError('');
         const result = onAddCamera({
-            name: formName,
-            address: formAddress,
+            name: trimmedName,
+            address: trimmedAddr,
             sensorId: formSensorId,
             synapsePort: formSynapsePort
         });
@@ -60,7 +85,7 @@ export function AddCameraModal({ isOpen, onClose, onAddCamera }) {
             resetForm();
             onClose();
         } else if (result?.error === 'address_exists') {
-            alert(t('address_exists') || "An edge node with this connection string is already mapped in the network.");
+            setValidationError(t('address_exists') || "Já existe uma câmera configurada com este endereço.");
         }
     };
 
@@ -72,6 +97,11 @@ export function AddCameraModal({ isOpen, onClose, onAddCamera }) {
             subtitle={t('sensors.add_subtitle')}
         >
             <form onSubmit={handleSubmit} className="space-y-4">
+                {validationError && (
+                    <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
+                        {validationError}
+                    </div>
+                )}
                 <div className="space-y-2">
                     <label className="text-sm font-medium text-foreground">{t('app_name')} - Camera Name</label>
                     <input

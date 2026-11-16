@@ -1,76 +1,97 @@
----
-tags: [svision, configuracao, settings, sqlite, pydantic, ambiente, brasil]
-aliases: [Referência de Configuração, Arquivo settings.ini, Variáveis de Ambiente, SQLite]
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<div align="center">
+# Referência de Configuração e Armazenamento
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
-
-# Referência de Configuração, settings.ini & SQLite
-### Hierarquia Pydantic Settings, Variáveis de Ambiente e Persistência Relacional
-*Noxfort Systems — A State Of Art Company*
-
-</div>
-
-⬅️ Voltar para a [Central Master MOC](svision_moc.md) | 🏛️ Ver [Arquitetura](architecture_overview.md) | 📡 Ver [Referência de API](api_and_ipc_reference.md) | 🚀 Ver [Implantação](deployment_operations.md)
+Os parâmetros do SVISION Core são centralizados em `SVisionConfig` (`src/common/config.py`), combinando variáveis de ambiente (`os.getenv`), leitura/gravação INI (`settings.ini`) via `configparser` e persistência SQLite (`src/common/database.py`).
 
 ---
 
-## 1. Visão Geral
+## 1. Variáveis de Ambiente (`SVisionConfig`)
 
-O **SVISION** implementa uma hierarquia estruturada de configurações corporativas gerenciadas pelo Pydantic Settings (`src/common/config.py`).
+### Caminhos, Boot e Supervisão F.E.N.I.X.
+| Variável | Padrão | Descrição |
+| :--- | :--- | :--- |
+| `SVISION_ROOT` | Raiz do repositório | Diretório base para modelos, binários e ativos. |
+| `SVISION_SETTINGS_FILE` | `settings.ini` | Caminho do arquivo INI com seção `[SYNAPSE]`. |
+| `SVISION_HEADLESS` | `0` | Ativa execução sem interface gráfica (`1`). |
+| `SVISION_DEBUG` | `0` | Habilita logs de depuração detalhados (`1`). |
+| `SVISION_SUPERVISED` | `0` | Definido pelo F.E.N.I.X. ao iniciar worker supervisionado (`--supervised`). |
+| `SVISION_RECONCILE` | `0` | Ativa limpeza `VisionStateReconciler` em reinício de worker (`--reconcile`). |
+| `SVISION_PYTHON` | Interpretador atual | Caminho do executável Python utilizado pelo `ProcessRunner`. |
+| `SVISION_API_KEY_FILE` | `/tmp/svision_api_key` | Arquivo do token Bearer de 64 chars hex (`0o600`). |
 
-A ordem de precedência de carregamento segue o padrão de sistemas de borda:
-1. **Argumentos de Linha de Comando** (ex: `--daemon`, `--headless`).
-2. **Variáveis de Ambiente do Sistema** (ex: `SVISION_HEADLESS=1`).
-3. **Arquivo de Configuração Local** (`settings.ini`).
-4. **Valores Padrão de Fallback** definidos no código-fonte.
+### Pipeline a 12 FPS e Fatiamento Temporal
+| Variável | Padrão | Descrição |
+| :--- | :--- | :--- |
+| `SVISION_PIPELINE_TARGET_FPS` | `12.0` | Cadência alvo canônica do `SliceScheduler`. |
+| `SVISION_PIPELINE_INTERVAL` | `0.0833` | Duração de cada tick de slice (~83.3 ms). |
+| `SVISION_JITTER_MIN` / `MAX` | `-0.010` / `0.010` | Janela de escalonamento anti-rajada (s). |
+| `SVISION_SUPERVISOR_POLL` | `2.0` | Intervalo de checagem do `PipelineSupervisor` (s). |
+| `SVISION_FPS_WINDOW` / `MIN_FRAMES` | `10` / `10` | Janela deslizante de cálculo de FPS real. |
+| `SVISION_WORKER_THREADS` | `4` | Pool de threads auxiliares. |
+
+### GPU, TensorRT e Governança Elástica
+| Variável | Padrão | Descrição |
+| :--- | :--- | :--- |
+| `SVISION_VRAM_SAFETY_RATIO` | `0.15` | Margem mínima de segurança em VRAM (`15%`). |
+| `SVISION_VRAM_CRITICAL_MB` | `1000.0` | Limite crítico de VRAM livre (MB) para redução de marcha/lote. |
+| `SVISION_CROP_COST_MB` | `12.0` | Custo estimado em VRAM por crop ativo. |
+| `SVISION_DEMAND_WEIGHT` / `LATENCY_WEIGHT` | `1.2` / `0.8` | Pesos de priorização do `VipKernelScheduler`. |
+| `SVISION_SCHEDULER_MIN_BATCH` / `MAX` / `DEFAULT` | `4` / `32` / `20` | Faixa dinâmica de lotes de crops. |
+| `SVISION_TRT_MAX_BATCH` | `16` | Teto fallback caso `_read_engine_batch_limit` não extraia da engine. |
+| `SVISION_GEARBOX_ON_DEMAND` | `True` | Carrega marchas pesadas sob demanda na primeira troca. |
+| `SVISION_HEAVY_DWELL_SECONDS` | `30.0` | Tempo mínimo de permanência em marcha `Heavy` (anti-oscilação). |
+| `SVISION_EMA_ALPHA` | `0.15` | Fator de suavização exponencial de telemetria. |
+
+### Visão, SCS e Extração Foveada
+| Variável | Padrão | Descrição |
+| :--- | :--- | :--- |
+| `SVISION_SCS_THRESHOLD` | `0` | Limiar de convergência SCS (`0` para partida rápida; `98.0` estrito). |
+| `SVISION_MIN_CROP_SIZE` | `64` | Dimensão mínima (px) para crops de ROI. |
+| `SVISION_CROP_PADDING` | `32` | Margem adicional em pixels ao redor do movimento. |
+| `SVISION_TEMPORAL_MIN_FRAMES` | `3` | Frames consecutivos exigidos para validar movimento. |
+| `SVISION_TEMPORAL_GRID_SIZE` | `32` | Grade espacial (px) de filtragem temporal. |
+| `SVISION_PERIPHERAL_WIDTH` | `320` | Largura periférica (px) de detecção rápida de movimento. |
+
+### Rede Synapse e Telemetria
+| Variável | Padrão | Descrição |
+| :--- | :--- | :--- |
+| `SVISION_SYNAPSE_THROTTLE` | `0.2` | Intervalo mínimo entre emissões por sensor (5 Hz máx.). |
+| `SVISION_SYNAPSE_HOST` | `127.0.0.1` | Host destino Synapse (sobrescrito por `settings.ini`). |
+| `SVISION_SYNAPSE_BASE_PORT` | `9001` | Porta TCP inicial alocada pelo `svision-go`. |
+| `SVISION_SYNAPSE_UDS_PATH` | `/tmp/svision_synapse.sock` | Caminho do socket Unix compartilhado. |
+| `SVISION_SYNAPSE_UDS_MODE` | `0600` | Permissão do arquivo socket Unix. |
+| `SVISION_TELEMETRY_INTERVAL` | `1.0` | Periodicidade dos eventos STDOUT para a UI (s). |
 
 ---
 
-## 2. Arquivo Local de Configuração (`settings.ini`)
-
-Localizado na raiz do projeto, armazena preferências persistentes editadas pela interface desktop:
+## 2. Arquivo `settings.ini`
 
 ```ini
-[synapse]
+[SYNAPSE]
 host = 127.0.0.1
 base_port = 9001
 ```
 
-| Chave | Padrão | Tipo | Descrição |
-|---|---|---|---|
-| `host` | `127.0.0.1` | String | Endereço IP ou hostname do cluster central Synapse. |
-| `base_port` | `9001` | Inteiro | Porta TCP inicial a partir da qual o despachante Go aloca portas dedicadas por câmera. |
+---
+
+## 3. Esquema SQLite (`~/Documentos/Svision/database/svision_telemetry.db`)
+
+Gerenciado por `SQLiteStateRepository` (`src/common/database.py`):
+- **Tabela `cameras` (`CameraNode`):** `id`, `name`, `address`, `sensor_id`, `synapse_port`, `homography_json`, `params_json`, `updated_at`.
+- **Tabela `traffic_profiles` (`TrafficProfileNode`):** `id`, `camera_id`, `timestamp`, `density`, `average_velocity`.
+- **Topologias Opcionais JSON:** `~/Documentos/Svision/topologies/<camera_id>.json`.
+- **Engines YOLO11:** `src/models/yolo/` (`yolo11*.pt`, `.onnx`, `.engine`).
 
 ---
 
-## 3. Principais Variáveis de Ambiente
+## 4. Documentação Relacionada
 
-| Variável | Valor Padrão | Finalidade |
-|---|---|---|
-| `SVISION_ROOT` | Diretório do script | Caminho absoluto do repositório no sistema de arquivos. |
-| `SVISION_HEADLESS` | `0` | Se `1`, inicia o motor de IA em modo daemon autônomo sem carregar o shell desktop. |
-| `SVISION_DEBUG` | `0` | Se `1`, ativa logs detalhados de depuração para testes de laboratório. |
-| `SVISION_SYNAPSE_UDS_PATH` | `/tmp/svision_synapse.sock` | Caminho do socket Unix Domain Socket utilizado entre Python e Go. |
-| `CUDA_VISIBLE_DEVICES` | `0` | Índice da GPU física NVIDIA utilizada para inferência CUDA/TensorRT. |
-| `OPENCV_FFMPEG_LOGLEVEL`| `-8` | Silencia mensagens internas do decodificador FFMPEG (`-8` = quiet). |
+- [Supervisor F.E.N.I.X.](fenix_supervisor.md)
+- [Pipeline de GPU e Marchas](gpu_pipeline.md)
+- [Implantação e Operações](deployment_operations.md)
 
 ---
 
-## 4. Persistência Relacional em SQLite (`svision.db`)
-
-O banco local SQLite armazena o estado persistente do sistema de borda:
-- Tabela `cameras`: ID da câmera, nome descritivo, URL RTSP, status de calibração SCS e parâmetros de homografia.
-- Tabela `topologies`: Polígonos de faixas compilados e vetores de direção cardeal.
-- Tabela `telemetry_history`: Buffer de contingência local com índices temporais.
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Engenharia de Visão de Borda Soberana • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licenciado sob AGPLv3.</small>
-</div>
+*Documentação SVISION Core — v1.2.0 (2026-11-16)*

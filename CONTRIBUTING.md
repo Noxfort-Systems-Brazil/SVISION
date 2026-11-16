@@ -32,7 +32,9 @@ This project adheres to a [Code of Conduct](./CODE_OF_CONDUCT.md). By participat
 
 - **Python 3.12+** with a virtual environment
 - **Node.js 20+** and `npm`
-- **NVIDIA GPU** with up-to-date drivers (for full pipeline testing)
+- **Rust & Cargo** (for Tauri v2 desktop builds)
+- **Go 1.22+** (for `svision-go` Synapse Dispatcher)
+- **NVIDIA GPU** with up-to-date drivers (for full TensorRT/NVDEC pipeline testing)
 - **Git** with GPG signing configured (recommended)
 
 ### Backend Setup
@@ -43,14 +45,17 @@ git clone <your-fork-url>
 cd SVISION_CORE
 
 # Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 
 # Install Python dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
 
-# Run the backend
+# Run the full Desktop UI (Tauri + Python + Go) or Headless / F.E.N.I.X. mode
 python svision.py
+# python svision.py --daemon
+# python svision.py --supervisor
 ```
 
 ### Frontend Setup
@@ -59,18 +64,21 @@ python svision.py
 # Install Node.js dependencies
 npm install
 
-# Run the frontend independently (dev mode)
+# Run the frontend independently in browser Demo Mode (dev mode)
 npm run dev
 ```
 
-### Running Tests
+### Running Tests & Linters
 
 ```bash
-# Run the full test suite
-pytest tests/ -v
+# Run unified Python, Ruff, Go, and Vitest test suites
+bash scripts/run_all_tests.sh
 
-# Run with coverage
-pytest tests/ --cov=src --cov-report=html
+# Or run individual suites:
+ruff check src/ tests/
+pytest tests/ -v --cov=src --cov-report=term-missing
+cd svision-go && go test -v -race -cover ./...
+npm run test
 ```
 
 ## Architecture Overview
@@ -138,11 +146,14 @@ class MyModule:
 
 ### File Headers
 
-All source files must include the AGPL-3.0 license header:
+All source files must include the SPDX license identifier header (`AGPL-3.0-or-later`):
 
 ```python
-# SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
+# SVISION (Synapse Vision) is a sovereign AI workstation platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -193,22 +204,26 @@ We follow the [Conventional Commits](https://www.conventionalcommits.org/) speci
 |-------|-----------|
 | `engine` | `src/engine/` |
 | `vision` | `src/vision/` |
+| `fenix` | `src/fenix/` |
+| `ipc` | `src/ipc/` |
 | `api` | `src/api/` |
 | `network` | `src/network/` |
 | `common` | `src/common/` |
-| `agents` | `src/agents/` |
+| `models` | `src/models/` |
+| `go` | `svision-go/` |
+| `tauri` | `src-tauri/` |
 | `ui` | `ui/` |
-| `electron` | `electron/` |
+| `docs` | `docs/` |
 
 ### Examples
 
 ```
 feat(engine): add adaptive batch sizing based on VRAM pressure
-fix(vision): resolve ByteTrack double-counting on trigger-line
-perf(engine): reduce CUDA context switches via stream pooling
-docs(api): update WebSocket auth flow documentation
-refactor(network): extract synapse dispatch into standalone module
-security(common): sanitize homography matrix inputs
+feat(fenix): add windowed crash recovery and CUDA state reconciler
+fix(vision): advance confirmed Kalman tracks across short occlusion gaps
+perf(engine): chunk Triton TensorRT inference batches by engine profile
+docs(api): document set_homography and update_camera_params IPC actions
+refactor(network): emit fluid continuum channels payload over Go UDS
 ```
 
 ## Pull Request Process
@@ -225,7 +240,7 @@ security(common): sanitize homography matrix inputs
 - [ ] Code follows the project coding standards
 - [ ] All existing tests pass (`pytest tests/ -v`)
 - [ ] New tests added for new functionality
-- [ ] License headers present on all new files
+- [ ] SPDX license headers (`SPDX-License-Identifier: AGPL-3.0-or-later`) present on all new files
 - [ ] Documentation updated if architecture changed
 - [ ] LGPD compliance verified (no image data in logs/tracebacks)
 - [ ] No hardcoded magic values (use `SVisionConfig`)
@@ -239,10 +254,13 @@ security(common): sanitize homography matrix inputs
 
 ## License
 
-By contributing to SVision, you agree that your contributions will be licensed under the **AGPL-3.0** license.
+By contributing to SVision, you agree that your contributions will be licensed under the **AGPL-3.0-or-later** license (SPDX-License-Identifier: `AGPL-3.0-or-later`).
 
 ---
 
 <div align="center">
-  <i>SVision • Noxfort Systems</i>
+  <img src="docs/assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
+  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
+  <i>Sovereign Workstation Vision Engineering • SVISION v1.2.0</i><br/>
+  <small>© 2026 Noxfort Systems • SPDX-License-Identifier: AGPL-3.0-or-later</small>
 </div>

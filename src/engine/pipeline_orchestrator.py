@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -29,6 +32,7 @@ Coordinates the top-level platform subsystems:
 Re-exports CameraAgent and PipelineSupervisor for transparent backward compatibility.
 """
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -95,22 +99,25 @@ class CentralPipelineOrchestrator:
     async def execute_main_engine_loop(self):
         """
         Engages the platform:
-          1. Starts the CUDA Batch Consumer (single GPU queue thread).
+          1. Pre-warms the base Nano engine in TritonInt8Engine when SliceScheduler is active.
           2. Engages the High-Density 12 FPS Slice Scheduler.
           3. Runs the PipelineSupervisor discovery loop.
         """
         self.is_active = True
         self._resolve_subsystems()
 
-        # Start GPU Batch Consumer
-        if self._inferencer and hasattr(self._inferencer, "start_batch_consumer"):
+        # Warm up active inference engine for SliceScheduler (avoids duplicate idle CUDA consumer)
+        scheduler_engine = getattr(self._slice_scheduler, "_engine", None)
+        if scheduler_engine and hasattr(scheduler_engine, "initialize_base_model"):
+            await asyncio.to_thread(scheduler_engine.initialize_base_model)
+        elif self._inferencer and hasattr(self._inferencer, "start_batch_consumer"):
             self._inferencer.start_batch_consumer()
 
         # Start High-Density 12 FPS Slice Scheduler
         if self._slice_scheduler and hasattr(self._slice_scheduler, "start"):
             self._slice_scheduler.start()
 
-        logger.info("Supervisor Pipeline Engaged. CUDA Batch Consumer & Slice Scheduler active.")
+        logger.info("Supervisor Pipeline Engaged. Triton/Elastic Slice Scheduler active.")
 
         # Run camera supervisor loop
         await self.supervisor.run_discovery_loop()

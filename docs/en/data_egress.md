@@ -1,186 +1,104 @@
----
-title: "Data Egress — Synapse, MicroBatcher, Go Dispatcher & RAM Buffer"
-tags: [svision, network, synapse, egress, microbatcher, buffer, architecture]
-aliases: ["Data Egress", "Synapse Emitter", "Telemetry Pipeline"]
-updated: 2026-09-05
-category: "Network Egress & Synapse Dispatcher"
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-[🏠 Home](../index.md) › **Data Egress**
+# Data Egress & Macroscopic Fluid Flow Engine
 
----
+SVISION Core streams **macroscopic directional traffic flow telemetry** — not discrete license plates, bounding boxes, or vehicle-counting events — with strict **Zero-Backlog Fire-and-Forget** delivery to downstream Synapse consumers.
 
-# Data Egress — Synapse, MicroBatcher & RAM Buffer
-
-> SVision — Architecture Documentation  
-> Copyright © 2026 Gabriel Moraes — Noxfort Systems
+> **Architectural update (v1.2.0):** Legacy event-counting and store-and-forward modules (`trigger_counter.py`, `trigger_detector.py`, `ram_buffer.py` / `ResilientRamBuffer`, and `channel_manager.py`) were completely removed. Egress now flows directly from `FluidFlowEstimator` → `FireForgetBatcher` → `SynapseEmitter` → `SynapseBuilder` → `SynapseUDSClient` → Go `CameraStream.Push()`.
 
 ---
 
-## Overview
+## 1. End-to-End Egress Pipeline
 
-The egress subsystem is responsible for transforming raw visual detections and trajectories into structured traffic telemetry payloads, dispatching them to the central **Synapse** cluster.
-
-The architecture operates strictly under the **Fire-and-Forget** principle: network degradation, route latency spikes, or central server outages **never block the GPU inference pipeline**.
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          Data Egress Pipeline                            │
-│                                                                          │
-│  Detections ──► TriggerCounter ──► MicroBatcher (1 Hz) ──► Flush         │
-│                                           │                              │
-│                                           ▼                              │
-│                                     SynapseEmitter                       │
-│                                           │                              │
-│                   ┌───────────────────────┴───────────────────────┐      │
-│                   ▼                                               ▼      │
-│            SynapseBuilder                                 IsolatedChannel │
-│           (Schema v2.0)                                       Manager    │
-│                   │                                                      │
-│                   ▼                                                      │
-│          synapse_uds_client                                              │
-│        (Unix Domain Socket)                                              │
-│                   │                                                      │
-│                   ▼                                                      │
-│       ┌───────────────────────┐                                          │
-│       │ Go Synapse Dispatcher │ ──► TCP Stream ──► Synapse Core          │
-│       │ (svision-go gatekeep) │                                          │
-│       └───────────────────────┘                                          │
-│                   │ NETWORK FAILURE?                                     │
-│                   ▼                                                      │
-│          ResilientRamBuffer                                              │
-│          (LRU Memory Cache)                                              │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    TRK["KalmanTracker 2D Tracks"] -->|"process(detections, frame_shape, has_motion, dt_seconds)"| FFE["FluidFlowEstimator<br/>src/engine/fluid_flow_estimator.py"]
+    FFE -->|"Directional flow channels + is_heartbeat + calibrated"| BATCH["FireForgetBatcher<br/>src/network/micro_batcher.py"]
+    BATCH -->|"flush_fluid() circular angular mean"| EMIT["SynapseEmitter<br/>src/engine/synapse_emitter.py"]
+    EMIT -->|"record_traffic_sample (>= 5s)"| DB[("SQLite traffic_profiles<br/>src/common/database.py")]
+    EMIT -->|"build_fluid_payload + dispatch"| BLD["SynapseBuilder<br/>src/network/synapse_builder.py"]
+    BLD -->|"UDS DATA (camera_id routing)"| UDS["SynapseUDSClient → Go Dispatcher<br/>Zero-Backlog TCP NDJSON"]
 ```
 
 ---
 
-## Components
+## 2. Macroscopic Flow Estimation (`FluidFlowEstimator`)
 
-### 1. TriggerCounter (`src/engine/trigger_counter.py`)
+Implemented in `src/engine/fluid_flow_estimator.py`, `FluidFlowEstimator.process(detections, frame_shape=(720, 1280), has_motion=True, dt_seconds=None)` translates 2D tracked detections into traffic fluid metrics:
 
-**Responsibility**: Identifies when the bounding box centroid of a tracked vehicle crosses a virtual counting line on the roadway.
-
-1. Receives bounding boxes and kinematic identifiers (`track_id`) from [Kalman Tracker](vision_subsystem.md).
-2. Evaluates sign changes in coordinate positions relative to the trigger line vector (`trigger_y`).
-3. Upon confirming a crossing, invokes homographic transformation from [Lane Mapper](vision_subsystem.md) to estimate real-world speed in km/h and increments `MicroBatcher`.
-4. Flags the `track_id` as counted to prevent duplicate records.
-
-```python
-if trigger_line.check_crossing(track_id, bbox, trigger_y):
-    speed = lane_mapper.compute_world_speed(cam_id, bbox, velocity, fps)
-    batcher.increment(cam_id, approach, speed_kmh=speed["speed_kmh"])
-```
+1. **Dynamic Time Delta:** Uses actual inter-slice `dt_seconds` (`eff_fps = 1.0 / eff_dt`, falling back safely when unavailable) so speed estimation remains accurate even when `SliceScheduler` experiences jitter or thermal load.
+2. **Spatial Road Density ($\rho$):**
+   $$\rho = \text{clip}\!\left(\frac{\sum \text{bbox\_area}}{\text{effective\_road\_area}},\ 0.0,\ 1.0\right)$$
+   where `effective_road_area` defaults to `0.70 * total_frame_area` (reflecting active drivable surface within the frame).
+3. **Metric vs. Fallback Speed Calculation:**
+   - **Calibrated (`calibrated = true`):** If a valid `3x3` homography matrix is loaded for the sensor (`state_manager` / SQLite / `AutoLaneMapper`), bottom-center displacement vectors are projected via `cv2.perspectiveTransform` into world coordinates and scaled by `eff_fps` to km/h.
+   - **Uncalibrated (`calibrated = false`):** Uses an explicit pixel/bounding-box heuristic estimate and sets `"calibrated": false` in the emitted payload so downstream dashboards and Synapse nodes signal uncalibrated status clearly.
+4. **Directional Channel Clustering (`max_angle_diff = 75.0°`):** Active velocity vectors whose heading falls within `75.0°` angular distance are clustered into directional channels (each carrying `direction_deg`, `speed`, and `density`), supporting multi-way intersections or opposing carriageways automatically.
+5. **Heartbeat Continuity:** When a slice sees no active motion (`has_motion = False` or no detections), `FluidFlowEstimator` marks the sample `is_heartbeat = True` rather than suppressing output.
 
 ---
 
-### 2. MicroBatcher (`src/network/micro_batcher.py`)
+## 3. Circular Micro-Batching (`FireForgetBatcher`)
 
-**Responsibility**: Accumulates crossing events in discrete **1-second windows (1 Hz)**.
+Located in `src/network/micro_batcher.py`, `FireForgetBatcher` aggregates per-slice samples between Synapse throttle ticks (`config.SYNAPSE_THROTTLE_INTERVAL`, default `0.2s` / 5 Hz max egress rate per sensor):
 
-- **Zero-Fill Consistency**: Approaches discovered during lane topology compilation that registered zero crossings in the active window are padded with zero counts to preserve analytical schema consistency.
-- **Inactivity Detection**: Provides `is_idle(cam_id, idle_seconds=3.0)` to trigger heartbeat packets.
-
-**Accumulator Structure**:
-```python
-self._acc = {
-    "cam_01": {
-        "approach_nw": {"count": 5, "speeds": [42.3, 38.1, 45.6]},
-        "approach_se": {"count": 3, "speeds": [31.2, 28.8]}
-    }
-}
-```
+- **`record_fluid_sample()`:** Buffers channel readings for the active micro-window without disk queues or retry backlogs.
+- **`flush_fluid()`:**
+  - Averages `speed` and `density` across the window.
+  - Computes **circular angular mean** for `direction_deg` via $\operatorname{atan2}(\sum \sin \theta, \sum \cos \theta)$ so headings near `0°` / `360°` average accurately without wrap-around discontinuities.
+  - When idle (zero motion in the micro-window), emits a zeroed heartbeat vector `[{"direction_deg": 0.0, "speed": 0.0, "density": 0.0}]` with `is_heartbeat = True`.
 
 ---
 
-### 3. SynapseEmitter (`src/engine/synapse_emitter.py`)
+## 4. Payload Construction & Dual-ID Routing (`SynapseBuilder` & `SynapseEmitter`)
 
-**Responsibility**: 1 Hz rate-limiting orchestrator that governs dispatch timing.
+### Canonical Fluid Payload (`SynapseBuilder.build_fluid_payload`)
+`src/network/synapse_builder.py` formats every outgoing NDJSON packet as:
 
-**Behavior**:
-- Every 1 second (governed by `PIPELINE_SYNAPSE_THROTTLE`):
-  - If the camera is in the `PRODUCTION` lifecycle state ([`camera_lifecycle.md`](camera_lifecycle.md)):
-    - If events are accumulated, builds the standard traffic batch payload.
-    - If the camera has been inactive for more than 3 seconds, builds an idle keepalive marked `is_heartbeat: true`.
-  - Updates real-time stats in `StateManager` for presentation by the desktop UI ([`desktop_ui_tauri.md`](desktop_ui_tauri.md)).
-
----
-
-### 4. SynapseBuilder (`src/network/synapse_builder.py`)
-
-**Responsibility**: Constructs the canonical **Schema v2.0** JSON contract merging traffic counts with hardware telemetry, dispatching non-blockingly over the Unix Domain Socket to the Go dispatcher.
-
-**Schema v2.0 Payload Contract**:
 ```json
 {
-    "sensor_id": "cam_av_paulista_01",
-    "timestamp": 1772737200,
-    "window_ms": 1000,
-    "is_heartbeat": false,
-    "traffic": {
-        "approach_nw": {
-            "count": 4,
-            "speed_kmh": 46.2,
-            "occupancy": 0.20,
-            "density": 6.0
-        },
-        "approach_se": {
-            "count": 0,
-            "speed_kmh": 0.0,
-            "occupancy": 0.0,
-            "density": 0.0
-        }
+  "camera_id": "CAM_NORTE_01",
+  "timestamp": 1794841200123,
+  "is_heartbeat": false,
+  "calibrated": true,
+  "channels": [
+    {
+      "direction_deg": 92.4,
+      "speed": 48.6,
+      "density": 0.24
     },
-    "hardware": {
-        "cpu_percent": 28,
-        "ram_percent": 41,
-        "vram_mb": 2240,
-        "gpu_temp_c": 58,
-        "fps": 30,
-        "active_gear": "Medium"
+    {
+      "direction_deg": 271.1,
+      "speed": 51.2,
+      "density": 0.19
     }
+  ]
 }
 ```
 
-**Dispatch Mechanism**:
-Instead of relying on HTTP endpoints prone to network timeouts, Python passes the payload via a Unix Domain Socket (`/tmp/svision_synapse.sock`) to the [Go Synapse Dispatcher](synapse_dispatcher_go.md), which multiplexes persistent TCP streams to Synapse Core.
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `camera_id` | `string` | External **Synapse `sensor_id`** (fallback to internal `cam_id` if unset) for downstream Synapse correlation. |
+| `timestamp` | `int` | Unix epoch milliseconds (`int(time.time() * 1000)`). |
+| `is_heartbeat` | `bool` | `true` when zero moving vehicles were tracked during the emission interval. |
+| `calibrated` | `bool` | `true` when metric speed comes from an active `3x3` homography matrix; `false` for pixel estimation fallback. |
+| `channels` | `array` | List of directional flow aggregates (`direction_deg` in `[0, 360)`, `speed` km/h, `density` in `[0.0, 1.0]`). |
 
-```python
-@staticmethod
-async def dispatch(payload: Dict[str, Any]):
-    """Non-blocking UDS push to Go Synapse Dispatcher."""
-    from src.network.synapse_uds_client import synapse_uds_client
-    sensor_id = payload.get("sensor_id", "")
-    synapse_uds_client.push_telemetry(sensor_id, payload)
-```
-
----
-
-### 5. Resilient RAM Buffer (`src/network/ram_buffer.py`)
-
-**Responsibility**: Volatile memory buffer with **LRU (Least Recently Used)** eviction policy.
-
-When connectivity to the central Synapse cluster is severed:
-1. Payloads are buffered in volatile RAM (`OrderedDict`).
-2. If maximum capacity is reached (default: 1024 MB), the oldest records are dropped to protect new traffic data.
-3. Upon reconnection, buffered records are flushed in strict chronological sequence.
+### Dual-ID Routing & Traffic Profile Persistence
+1. **Routing Key Separation (`SynapseBuilder.dispatch(payload, camera_id=None)`):** Although `payload["camera_id"]` carries the external `sensor_id`, `SynapseEmitter` explicitly passes the internal `self._cam_id` to `dispatch(..., camera_id=self._cam_id)`. `SynapseBuilder` routes the UDS `DATA` frame using `camera_id or payload.get("sensor_id") or payload.get("camera_id", "")`, ensuring `svision-go` always locates the right `CameraStream` port even when custom external `sensor_id` labels are used.
+2. **SQLite Traffic Profile History:** `SynapseEmitter.emit()` periodically calls `state_manager.record_traffic_sample(self._cam_id, avg_density, avg_speed)` (minimum interval `5.0s`), appending historical traffic averages into SQLite table `traffic_profiles`.
+3. **In-Memory UI Snapshot:** `SynapseEmitter` simultaneously updates `state_manager.update_traffic_snapshot(...)`, allowing `TelemetryBroadcaster` (`network_stats` event) and `SynapseTelemetryGrid.jsx` to render live directional channels and calibration badges in the desktop workstation UI.
 
 ---
 
-## Related Documents
+## 5. Related Documentation
 
-- [🏠 Main Index / MOC](../index.md)
-- [🏗️ Architecture Overview](architecture_overview.md)
-- [🌐 Go Synapse Dispatcher](synapse_dispatcher_go.md)
-- [⚡ GPU Inference Pipeline](gpu_pipeline.md)
-- [🔄 Camera Lifecycle](camera_lifecycle.md)
-- [📡 API & IPC Reference](api_and_ipc_reference.md)
+- [Synapse Dispatcher (Go)](synapse_dispatcher_go.md)
+- [IPC Architecture](ipc_architecture.md)
+- [Vision Subsystem](vision_subsystem.md)
+- [API & IPC Reference](api_and_ipc_reference.md)
 
 ---
 
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
-</div>
+*SVISION Core Documentation — v1.2.0 (2026-11-16)*

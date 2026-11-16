@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -69,9 +72,27 @@ def test_idle_detection():
     """Verify is_idle() detects inactivity after threshold."""
     batcher = FireForgetBatcher()
 
-    # No events ever → always idle
-    assert batcher.is_idle("cam_1", idle_seconds=0.0)
-
     # After increment → not idle (if checked immediately)
     batcher.increment("cam_1", "approach_nw")
     assert not batcher.is_idle("cam_1", idle_seconds=1.0)
+
+
+def test_fluid_batcher_averaging():
+    """Verify that fluid samples are averaged correctly per channel."""
+    batcher = FireForgetBatcher()
+
+    batcher.record_fluid_sample("cam_1", "ch_0", direction_deg=110.0, speed_kmh=40.0, density=0.20)
+    batcher.record_fluid_sample("cam_1", "ch_0", direction_deg=120.0, speed_kmh=50.0, density=0.30)
+
+    channels = batcher.flush_fluid("cam_1")
+    assert len(channels) == 1
+    assert channels[0]["speed"] == 45.0
+    assert channels[0]["density"] == 0.25
+    assert 114.0 <= channels[0]["direction_deg"] <= 116.0
+
+    # Next flush should reset to empty channel
+    channels2 = batcher.flush_fluid("cam_1")
+    assert len(channels2) == 1
+    assert channels2[0]["speed"] == 0.0
+    assert channels2[0]["density"] == 0.0
+

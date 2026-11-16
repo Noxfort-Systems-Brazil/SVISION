@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -34,6 +37,7 @@ import logging
 from typing import Dict, List, Any, Optional
 
 from src.common.config import config
+from src.common.state_manager import state_manager
 from src.engine.elastic_governor import elastic_governor, GovernorDecision
 from src.engine.triton_int8_engine import triton_int8_engine
 
@@ -143,13 +147,24 @@ class SliceScheduler:
                 # Early finish! Elastic fabric breaths, letting GPU cool down
                 await asyncio.sleep(remaining_cycle_time)
 
+    @staticmethod
+    def _clamp_gear_to_ceiling(requested_gear: str, gear_ceiling: Optional[str]) -> str:
+        """Restricts requested camera gear to the ElasticGovernor VRAM ceiling."""
+        tier_order = [g["name"] for g in config.GEARBOX_GEAR_TABLE]
+        gear = requested_gear if requested_gear in tier_order else "Nano"
+        if gear_ceiling and gear_ceiling in tier_order:
+            if tier_order.index(gear) > tier_order.index(gear_ceiling):
+                return gear_ceiling
+        return gear
+
     async def _process_slice(self, camera_ids: List[str], gear_ceiling: Optional[str] = None):
         """
         Processes a single slice of cameras:
           1. Grabs frames / extracts motion ROIs
           2. Skips empty streets (fluid dynamics)
-          3. Bundles all moving crops into a unified batch for Triton / TensorRT
-          4. Updates Kalman trackers and egress counters
+          3. Groups moving crops by active ModelGearbox tier (clamped by VRAM ceiling)
+          4. Runs batched GPU inference per gear bucket and filters by camera confidence
+          5. Updates isolated trackers and egress counters
         """
         agents = [self._camera_registry[cid] for cid in camera_ids if cid in self._camera_registry]
         if not agents:
@@ -159,55 +174,58 @@ class SliceScheduler:
         grab_tasks = [agent.grab_and_extract_rois() for agent in agents]
         results = await asyncio.gather(*grab_tasks, return_exceptions=True)
 
-        # Stage 2: Aggregate valid crops across all cameras in the slice
-        batch_crops = []
-        crop_metadata = []  # (agent_idx, roi, camera_id)
+        # Stage 2: Aggregate valid crops grouped by desired gear tier
+        crops_by_gear: Dict[str, List[Any]] = {}
+        meta_by_gear: Dict[str, List[tuple]] = {}
 
         for agent_idx, res in enumerate(results):
             if isinstance(res, Exception) or not res:
                 continue
             frame, rois, cam_id = res
             if not rois:
-                # Fluidodynamics: empty street! No GPU needed
                 continue
+
+            requested_gear = getattr(agents[agent_idx], "active_gear", "Nano")
+            effective_gear = self._clamp_gear_to_ceiling(requested_gear, gear_ceiling)
+            cam_params = state_manager.get_camera_params(cam_id)
+            cam_conf = float(cam_params.get("confidence_threshold", 0.35))
 
             for roi in rois:
                 if not roi.get("has_motion", True):
-                    # Fluidodynamics: static scene / empty street - bypass GPU
                     continue
                 rx, ry, rw, rh = roi["rect"]
                 crop = frame[ry:ry+rh, rx:rx+rw]
                 if crop.size > 0:
-                    batch_crops.append(crop)
-                    crop_metadata.append((agent_idx, roi, cam_id))
+                    crops_by_gear.setdefault(effective_gear, []).append(crop)
+                    meta_by_gear.setdefault(effective_gear, []).append((agent_idx, roi, cam_id, cam_conf))
 
-        # Stage 3: Batched inference on GPU (if any crops exist)
-        if batch_crops:
-            # Determine active gear (apply governor ceiling if VRAM is tight)
-            gear = gear_ceiling if gear_ceiling else "Nano"
+        # Stage 3: Batched inference on GPU grouped by gear
+        agent_detections: Dict[int, List[Dict]] = {i: [] for i in range(len(agents))}
+
+        for gear, batch_crops in crops_by_gear.items():
+            batch_meta = meta_by_gear[gear]
+            min_conf = min(m[3] for m in batch_meta)
             batch_detections = await asyncio.to_thread(
-                self._engine.infer_batch, batch_crops, gear=gear
+                self._engine.infer_batch, batch_crops, gear=gear, conf_threshold=min_conf
             )
 
-            # Group detections back to respective agents
-            agent_detections: Dict[int, List[Dict]] = {i: [] for i in range(len(agents))}
-            for (agent_idx, roi, _), dets in zip(crop_metadata, batch_detections):
+            for (agent_idx, roi, _, cam_conf), dets in zip(batch_meta, batch_detections):
                 rx, ry, _, _ = roi["rect"]
                 for d in dets:
-                    # Offset local crop coordinates back to full frame
+                    if float(d.get("confidence", 0.0)) < cam_conf:
+                        continue
                     d_copy = dict(d)
                     bx, by, bw, bh = d_copy["bbox"]
                     d_copy["bbox"] = [bx + rx, by + ry, bw, bh]
                     agent_detections[agent_idx].append(d_copy)
 
-            # Stage 4: Dispatch tracking updates
-            for agent_idx, agent in enumerate(agents):
-                dets = agent_detections.get(agent_idx, [])
+        # Stage 4: Dispatch tracking updates
+        for agent_idx, agent in enumerate(agents):
+            dets = agent_detections.get(agent_idx, [])
+            try:
+                agent.post_inference_process(dets, gear_ceiling=gear_ceiling)
+            except TypeError:
                 agent.post_inference_process(dets)
-        else:
-            # No crops in entire slice: update agents with zero detections
-            for agent in agents:
-                agent.post_inference_process([])
 
 
 slice_scheduler = SliceScheduler()

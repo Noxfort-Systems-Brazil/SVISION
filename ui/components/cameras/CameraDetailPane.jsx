@@ -2,6 +2,9 @@
  * SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
  * Copyright (C) 2026 Noxfort Systems
  *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 Noxfort Systems
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
  * published by the Free Software Foundation, either version 3 of the
@@ -22,16 +25,64 @@
  * Description: Detailed inspector pane for the selected camera sensor (SRP & ISP).
  */
 
-import React from 'react';
-import { BrainCircuit, Expand, Trash2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { BrainCircuit, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { useTranslation } from '../../contexts/LanguageContext';
 import { MetricCard } from '../MetricCard';
+import { Modal } from '../Modal';
 import { SynapseTelemetryGrid } from './SynapseTelemetryGrid';
 import { CameraParametersTable } from './CameraParametersTable';
+import { ipcClient } from '../../services/ipc_client';
 import { YOLO_GEAR_DESCRIPTIONS, DEFAULT_GEAR_DESCRIPTION } from '../../constants/cameraConfig';
 
 export function CameraDetailPane({ camera, onRemove }) {
     const { t } = useTranslation();
+    const [isConfigOpen, setIsConfigOpen] = useState(false);
+    const [confThresh, setConfThresh] = useState('0.35');
+    const [nmsThresh, setNmsThresh] = useState('0.45');
+    const [nominalDir, setNominalDir] = useState('0');
+    const [approachName, setApproachName] = useState('node');
+    const [imgPtsText, setImgPtsText] = useState('100,400; 500,400; 550,200; 150,200');
+    const [worldPtsText, setWorldPtsText] = useState('0,0; 10,0; 10,20; 0,20');
+    const [calibFeedback, setCalibFeedback] = useState('');
+
+    useEffect(() => {
+        if (!camera) return;
+        const tp = camera.tuning_params || {};
+        setConfThresh(String(tp.confidence_threshold ?? 0.35));
+        setNmsThresh(String(tp.nms_threshold ?? 0.45));
+        setNominalDir(String(tp.nominal_direction ?? 0));
+        setApproachName(String(tp.approach ?? 'node'));
+        setCalibFeedback('');
+    }, [camera]);
+
+    const parsePointPairs = (raw) => {
+        return raw
+            .split(';')
+            .map((pair) => pair.trim().split(',').map((n) => parseFloat(n.trim())))
+            .filter((xy) => xy.length === 2 && !Number.isNaN(xy[0]) && !Number.isNaN(xy[1]));
+    };
+
+    const handleSaveCalibration = (e) => {
+        e.preventDefault();
+        if (!camera) return;
+
+        ipcClient.updateCameraParams(camera.id, {
+            confidence_threshold: parseFloat(confThresh) || 0.35,
+            nms_threshold: parseFloat(nmsThresh) || 0.45,
+            nominal_direction: parseFloat(nominalDir) || 0,
+            approach: approachName.trim() || 'node',
+        });
+
+        const imgPts = parsePointPairs(imgPtsText);
+        const worldPts = parsePointPairs(worldPtsText);
+        if (imgPts.length >= 4 && imgPts.length === worldPts.length) {
+            ipcClient.setHomography(camera.id, { image_points: imgPts, world_points: worldPts });
+            setCalibFeedback('Parâmetros e homografia enviados ao backend.');
+        } else {
+            setCalibFeedback('Parâmetros salvos. (Para homografia, informe ao menos 4 pares "x,y; ...").');
+        }
+    };
 
     if (!camera) {
         return (
@@ -73,8 +124,12 @@ export function CameraDetailPane({ camera, onRemove }) {
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
-                        <button className="p-2 border border-border rounded-md hover:bg-accent text-muted-foreground transition-colors" title="Expand View">
-                            <Expand className="w-4 h-4" />
+                        <button
+                            onClick={() => setIsConfigOpen(true)}
+                            className="p-2 border border-border rounded-md hover:bg-accent text-muted-foreground transition-colors"
+                            title="Calibração e Parâmetros"
+                        >
+                            <SlidersHorizontal className="w-4 h-4" />
                         </button>
                         <button
                             onClick={() => onRemove(camera.id)}
@@ -129,9 +184,109 @@ export function CameraDetailPane({ camera, onRemove }) {
                     <SynapseTelemetryGrid camera={camera} />
 
                     {/* Data Table */}
-                    <CameraParametersTable parameters={camera.parameters} />
+                    <CameraParametersTable
+                        parameters={camera.parameters}
+                        tuningParams={camera.tuning_params}
+                        calibrated={Boolean(camera.calibrated || camera?.synapse?.calibrated)}
+                    />
                 </div>
             </div>
+
+            <Modal
+                isOpen={isConfigOpen}
+                onClose={() => setIsConfigOpen(false)}
+                title={`Calibração & Parâmetros — ${camera.name}`}
+                subtitle="Ajuste de inferência e correspondência de homografia (pixels ↔ metros)"
+            >
+                <form onSubmit={handleSaveCalibration} className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium text-foreground">Confidence Threshold</label>
+                            <input
+                                type="number"
+                                step="0.05"
+                                min="0.05"
+                                max="0.99"
+                                value={confThresh}
+                                onChange={(e) => setConfThresh(e.target.value)}
+                                className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono"
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium text-foreground">NMS Threshold</label>
+                            <input
+                                type="number"
+                                step="0.05"
+                                min="0.05"
+                                max="0.99"
+                                value={nmsThresh}
+                                onChange={(e) => setNmsThresh(e.target.value)}
+                                className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono"
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium text-foreground">Direção Nominal (°)</label>
+                            <input
+                                type="number"
+                                step="1"
+                                min="0"
+                                max="359"
+                                value={nominalDir}
+                                onChange={(e) => setNominalDir(e.target.value)}
+                                className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono"
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium text-foreground">Approach / Nó</label>
+                            <input
+                                type="text"
+                                value={approachName}
+                                onChange={(e) => setApproachName(e.target.value)}
+                                className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono"
+                            />
+                        </div>
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-foreground">Pontos na Imagem (px: x1,y1; x2,y2; x3,y3; x4,y4)</label>
+                        <input
+                            type="text"
+                            value={imgPtsText}
+                            onChange={(e) => setImgPtsText(e.target.value)}
+                            className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-xs font-mono"
+                        />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-foreground">Pontos Reais no Solo (metros: X1,Y1; X2,Y2; X3,Y3; X4,Y4)</label>
+                        <input
+                            type="text"
+                            value={worldPtsText}
+                            onChange={(e) => setWorldPtsText(e.target.value)}
+                            className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-xs font-mono"
+                        />
+                    </div>
+
+                    {calibFeedback && (
+                        <p className="text-xs text-emerald-500 font-medium">{calibFeedback}</p>
+                    )}
+
+                    <div className="flex justify-end gap-2 pt-3 border-t border-border">
+                        <button
+                            type="button"
+                            onClick={() => setIsConfigOpen(false)}
+                            className="px-4 py-2 bg-muted text-muted-foreground rounded-md text-xs font-medium"
+                        >
+                            Fechar
+                        </button>
+                        <button
+                            type="submit"
+                            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-xs font-medium"
+                        >
+                            Aplicar e Calibrar
+                        </button>
+                    </div>
+                </form>
+            </Modal>
         </div>
     );
 }

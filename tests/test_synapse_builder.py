@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -102,3 +105,22 @@ def test_per_edge_multiplexing():
     # Edge with no batcher data should have zero-filled traffic
     assert payloads[2]["approach"] == "approach_e"
     assert payloads[2]["traffic"]["density"] == 0.0
+
+
+def test_fluid_payload_builder():
+    """Verify that build_fluid_payload outputs canonical continuous channels."""
+    channels = [
+        {"direction_deg": 115.0, "speed": 45.0, "density": 0.25},
+        {"direction_deg": 295.0, "speed": 12.0, "density": 0.85}
+    ]
+
+    payload = synapse_builder.build_fluid_payload("svision_01", channels)
+
+    assert payload["camera_id"] == "svision_01"
+    assert "timestamp" in payload
+    assert len(payload["channels"]) == 2
+    assert payload["channels"][0]["direction_deg"] == 115.0
+    assert payload["channels"][0]["speed"] == 45.0
+    assert payload["channels"][0]["density"] == 0.25
+    assert payload["channels"][1]["direction_deg"] == 295.0
+

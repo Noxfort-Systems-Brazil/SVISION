@@ -1,201 +1,98 @@
----
-title: "Camera Lifecycle — Autonomic Onboarding, SCS & Topology Discovery"
-tags: [svision, camera, lifecycle, scs, dbscan, topology, pbt, architecture]
-aliases: ["Camera Lifecycle", "SCS Orchestrator", "Topology Discovery"]
-updated: 2026-09-05
-category: "Computer Vision & GPU Acceleration"
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-[🏠 Home](../index.md) › **Camera Lifecycle**
+# Camera Lifecycle & Autonomic Calibration
 
----
+Every camera registered in SVISION Core transitions through a deterministic state machine managed by `CameraAgent` (`src/engine/camera_agent.py`), `SCSOrchestrator` (`src/engine/scs_orchestrator.py`), `AutonomicSceneConvergence` (`src/vision/asc_analyzer.py`), and `PipelineSupervisor` (`src/engine/pipeline_supervisor.py`), with durable persistence in SQLite (`src/common/database.py`) and fault reconciliation via F.E.N.I.X. (`src/fenix/state_reconciler.py`).
 
-# Camera Lifecycle
-
-> SVision — Architecture Documentation  
-> Copyright © 2026 Gabriel Moraes — Noxfort Systems
+> **Scope note:** SVISION Core operates in a **Node-Level Traffic Flow** model (`PRODUCTION` state) emitting continuous directional traffic vectors via `FluidFlowEstimator`. Historical modules such as `pbt_optimizer.py` and offline `.pt` topology files were removed; topology calibration uses `AutoLaneMapper` JSON files (`~/Documentos/Svision/topologies/<camera_id>.json`) or live 4-point homography (`set_homography`).
 
 ---
 
-## Overview
-
-Each camera sensor in SVision transitions through an automated 5-state onboarding pipeline. This state machine guarantees that no sensor emits operational traffic telemetry before its background model is fully converged and its lane polygon topology is compiled.
+## 1. Camera Lifecycle State Machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> BOOT : Camera added via UI (IPC)
-
-    BOOT --> SCS_CALIBRATION : Dequeued by SCS Orchestrator
-
-    state SCS_CALIBRATION {
-        [*] --> GMM_Feeding
-        GMM_Feeding --> Flow_Analysis : MOG2 + CLAHE background learning
-        Flow_Analysis --> Convergence_Check : Farneback optical flow stability
-        Convergence_Check --> GMM_Feeding : SCS < 98%
-        Convergence_Check --> [*] : SCS ≥ 98% (30 consecutive frames)
-    }
-
-    SCS_CALIBRATION --> DISCOVERY : Background model converged
-
-    state DISCOVERY {
-        [*] --> Angle_Collection
-        Angle_Collection --> DBSCAN_Trigger : Accumulate 200 trajectory samples
-    }
-
-    DISCOVERY --> COMPILING : DBSCAN triggered
-
-    state COMPILING {
-        [*] --> Cluster_Analysis
-        Cluster_Analysis --> Polygon_Gen : Sector-wedge polygon generation
-        Polygon_Gen --> PT_Save : Save .pt tensor file
-    }
-
-    COMPILING --> PRODUCTION : Topology written to disk
-
-    state PRODUCTION {
-        [*] --> GPU_PiP_Active
-        GPU_PiP_Active : Topology loaded onto GPU VRAM
-        GPU_PiP_Active : Synapse telemetry emission unlocked
-        GPU_PiP_Active : Full inference pipeline active
-    }
-
-    PRODUCTION --> SCS_CALIBRATION : Abrupt SCS drop (PBT Physical Displacement)
+    [*] --> SCS_CALIBRATION : add_camera / SQLite hydration
+    SCS_CALIBRATION --> PRODUCTION : ASC converged + topology loaded or Node-Level promotion
+    SCS_CALIBRATION --> SCS_CALIBRATION : Waiting for real frame or stability window
+    SCS_CALIBRATION --> ERROR : 240 empty polls (offline) or fatal stream failure
+    PRODUCTION --> PRODUCTION : SliceScheduler 12 FPS + FluidFlowEstimator telemetry
+    PRODUCTION --> ERROR : Stream drop / worker failure
+    ERROR --> SCS_CALIBRATION : Manual re-add / F.E.N.I.X. reconciliation or stream recovery
+    PRODUCTION --> [*] : remove_camera / DETACH_CAMERA
+    ERROR --> [*] : remove_camera / DETACH_CAMERA
 ```
 
----
+### Primary States
 
-## Detailed States
-
-### 1. BOOT
-
-**Trigger**: Camera registered via Tauri v2 IPC command (`add_camera` or `set_cameras`). See [API & IPC Reference](api_and_ipc_reference.md).
-
-**Actions**:
-- Camera metadata stored in memory via `StateManager` and persisted in the SQLite database.
-- `StreamDecoder` initiates RTSP connection over TCP via NVDEC ([`vision_subsystem.md`](vision_subsystem.md)).
-- `synapse_uds_client` requests a dedicated TCP port allocation from the [Go Synapse Dispatcher](synapse_dispatcher_go.md).
-- Camera is enqueued into the hibernation queue of the **SCS Orchestrator**.
-
-**Duration**: Instantaneous (< 100ms).
+| Status | Meaning | Transition Trigger |
+| :--- | :--- | :--- |
+| **`SCS_CALIBRATION`** | Initial state upon registration (`add_camera`) or SQLite hydration on daemon boot | `AutonomicSceneConvergence.start_calibration(camera_id)` |
+| **`PRODUCTION`** | Active 12 FPS `SliceScheduler` slicing, YOLO INT8 inference, 2D Kalman tracking, and continuous `FluidFlowEstimator` emission | Convergence threshold met + `has_topology()` / Node-Level promotion |
+| **`ERROR`** | Stream acquisition failure, 240 empty frame polls (~12s) without video data, or fatal subsystem fault | Offline camera timeout (`max_empty_polls = 240`) or unrecoverable decoder error |
 
 ---
 
-### 2. SCS_CALIBRATION (Staggered Calibration Sequencer)
+## 2. Step-by-Step Calibration & Promotion Flow
 
-**Trigger**: `SCSOrchestrator` dequeues the camera while respecting the thermal power envelope (maximum 4 concurrent calibrating cameras).
+### Step 1: Registration & Persistence
+When `add_camera` arrives via IPC (`src/ipc/command_handlers.py`) or `StdioDaemon._hydrate_persisted_cameras()` (`src/ipc/stdio_daemon.py`) replays persisted sensors at startup:
+1. `CameraStateManager` updates the in-memory `CameraInfo` record and persists the `CameraNode` row to SQLite (`svision_telemetry.db`) — including `id`, `name`, `address`, `sensor_id`, `synapse_port`, `homography_json`, and `params_json`.
+2. `NvdecStreamDecoder.connect_camera(camera_id, url)` spawns a dedicated background reader thread that continually drains RTSP/video frames (`max_dim = 720`).
+3. `SynapseUDSClient.attach_camera(camera_id, sensor_id, preferred_port)` sends `ATTACH_CAMERA` over UDS to `bin/synapse-dispatcher`.
+4. `SCSOrchestrator.enqueue_camera(camera_id)` triggers asynchronous `AutonomicSceneConvergence.start_calibration(camera_id)`.
 
-**Processing**:
-1. **GMM Background Subtraction**:
-   - `cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)`.
-   - Prior luminance normalization via CLAHE in the LAB color space.
-   - GMM score: `100.0 - (noise_ratio * 1000.0)`.
-2. **Optical Flow Stability**:
-   - Temporal consistency evaluation using the Farneback dense optical flow algorithm.
-   - Stability score: `1.0 - (avg_magnitude / 10.0)`.
-3. **Composite SCS Score**:
-   ```
-   SCS = (GMM_score * 0.7) + (flow_stability * 100.0 * 0.3)
-   ```
-4. **Convergence Criterion**:
-   - SCS ≥ 98% sustained across **30 consecutive frames** (evaluated every 100ms).
+### Step 2: Real-Frame Acquisition (Zero Synthetic Fallback)
+Inside `_run_scs_calibration(camera_id)` (`src/vision/asc_analyzer.py`):
+- The calibration loop polls `stream_decoder.read_latest_frame(camera_id)` in `asyncio` steps (~`0.05s` intervals).
+- Empty polls increment a counter up to `max_empty_polls = 240`.
+- **No synthetic noise fallback:** If a camera is offline, unreachable, or removed before delivering frames, `AutonomicSceneConvergence` logs an error/termination and stops calibration cleanly without feeding random synthetic arrays into MOG2 or optical flow.
 
-**Broadcast**: The calibration score is emitted in real time via STDOUT to the desktop interface ([`desktop_ui_tauri.md`](desktop_ui_tauri.md)).
+### Step 3: Scene Stability Evaluation (`ASCAnalyzer`)
+Once real decoded frames arrive, `AutonomicSceneConvergence` evaluates scene stability frame-by-frame:
+1. **Background Stabilization (MOG2):** Computes foreground mask energy ratio to derive `gmm_score`.
+2. **Dense Flow Stability (`OpticalFlowAnalyzer`):** Computes optical flow motion stability `flow_stability`.
+3. **Composite Stability Score:**
+   $$\text{score} = \min\big(100.0,\ (\text{gmm\_score} \times 0.7) + (\text{flow\_stability} \times 100.0 \times 0.3)\big)$$
+4. **Adaptive Stability Window:**
+   - Reads `threshold = config.PIPELINE_SCS_THRESHOLD` (default `0` for immediate Node-Level startup; `98.0` for strict multi-frame scene convergence).
+   - Required consecutive frames meeting `score >= threshold`: `required_stable = 30 if threshold >= 90.0 else 5`.
 
-**Typical Duration**: 5 to 30 seconds (depending on weather conditions and roadway traffic volume).
-
----
-
-### 3. DISCOVERY
-
-**Trigger**: SCS convergence criterion met.
-
-**Processing**:
-1. `CameraAgent` activates GPU inference via the [CUDA Batch Consumer](gpu_pipeline.md).
-2. For each tracked vehicle from `KalmanPredictiveTracker`, computes displacement vectors.
-3. `LaneMapper` accumulates trajectory heading angles into an internal profile.
-
-**Completion Criterion**: Accumulation of **200 valid trajectory samples**.
-
-**Typical Duration**: 30 seconds to 3 minutes (dependent on traffic volume).
+### Step 4: Topology Resolution & `PRODUCTION` Promotion
+Upon meeting `required_stable` frames:
+1. `SCSOrchestrator` checks `lane_mapper.has_topology(camera_id)` and attempts `lane_mapper.load_topology(camera_id)`.
+2. `AutoLaneMapper` (`src/vision/lane_mapper.py`) looks for JSON topology artifacts in `~/Documentos/Svision/topologies/<camera_id>.json`. By default in **Node-Level Traffic Flow** mode, `has_topology()` returns `True` so sensors immediately proceed to `PRODUCTION`.
+3. If an explicit topology discovery pass is needed, `_run_discovery()` promotes the node directly to `PRODUCTION` (DBSCAN `_compile_topology()` and `_sector_wedge_polygon()` geometric helpers remain available in `AutoLaneMapper` for offline sector/lane modeling).
 
 ---
 
-### 4. COMPILING
+## 3. Isolated Execution State in `PRODUCTION`
 
-**Trigger**: 200 trajectory samples accumulated.
-
-**Processing**:
-1. **DBSCAN Trajectory Clustering**:
-   - `eps=15` degrees, `min_samples=10`.
-   - Clusters predominant traffic directions into cardinal approach clusters (`approach_n`, `approach_se`, etc.).
-2. **Sector-Wedge Polygon Generation**:
-   - Each directional cluster generates an approach wedge (radius of 200px, 8 vertices, aperture of ±20°).
-3. **Tensor Compilation & Persistence**:
-   - Builds a PyTorch tensor shaped `[N, 8, 2]` holding polygon vertices.
-   - Saves binary tensor file directly to `~/Documentos/Svision/topology/<cam_id>.pt`.
-4. **Safety Fallback**: If DBSCAN fails to extract distinct clusters due to severe noise, generates a default 2-edge topology (North/South).
-
-**Duration**: < 500ms.
+During `PRODUCTION`, each camera receives dedicated, cross-isolated state managed by `PipelineSupervisor` (`src/engine/pipeline_supervisor.py`):
+- **Isolated `ModelGearbox` & `KalmanTracker`:** Prevents cross-camera gear bleed and track ID collisions across batches.
+- **Per-Camera `FluidFlowEstimator`:** Aggregates active track velocities, bounding-box pixel density, and homography-calibrated speeds into directional channels (`direction_deg`, `speed`, `density`).
+- **Live Parameter & Homography Injection:** `update_camera_params` and `set_homography` update per-camera `tuning_params` (confidence threshold, NMS threshold, nominal direction, approach) and `3x3` projective matrices atomically in SQLite and live vision pipelines without restarting the stream.
+- **Heartbeat Continuity:** Even when zero vehicles are moving (`has_motion = False`), `FireForgetBatcher` + `SynapseEmitter` preserve continuous JSON cadence (`is_heartbeat: true`) so downstream consumers distinguish an empty road from a disconnected camera.
 
 ---
 
-### 5. PRODUCTION
+## 4. Cleanup, Teardown & Fault Reconciliation
 
-**Trigger**: Topology `.pt` file successfully generated or loaded from cache.
-
-**Active Capabilities**:
-- ✅ **GPU Point-in-Polygon**: Topology tensor resides in GPU VRAM for fast cross-product inclusion tests (Tensor Cores).
-- ✅ **Synapse Telemetry Unlocked**: Telemetry dispatch is authorized to the [Go Synapse Dispatcher](synapse_dispatcher_go.md) and central cluster.
-- ✅ **Real-Time Counting & Velocity**: Virtual trigger line crossing detection coupled with metric homography speed estimation.
-
-> [!TIP]
-> **Fast-Path Boot (Instant Production)**:
-> If the `.pt` topology file already exists on disk when the system starts, the camera immediately enters **PRODUCTION**, executing background SCS calibration concurrently.
+- **Manual Removal (`remove_camera`):** Cancels pending SCS tasks, removes entries from `PipelineSupervisor`, `CameraStateManager`, and SQLite (`cameras` table), disconnects `NvdecStreamDecoder` reader threads, and sends `DETACH_CAMERA` to `bin/synapse-dispatcher`.
+- **Daemon Shutdown (`StdioDaemon.shutdown`):** Stops `PipelineOrchestrator`, stops `SynapseUDSClient`, calls `stream_decoder.disconnect_all()`, flushes CUDA cache, and calls `cleanup_synapse_dispatcher()` to reap the Go child process cleanly.
+- **Crash Recovery (F.E.N.I.X.):** When running under `python svision.py --supervisor`, `VisionStateReconciler` resets `PRODUCTION`/`CALIBRATING` flags if needed, purges stale GPU/VRAM allocations, and re-hydrates `CameraNode` rows from SQLite when the worker respawns. See [F.E.N.I.X. Supervisor](fenix_supervisor.md).
 
 ---
 
-## Autonomic Self-Optimization
+## 5. Related Documentation
 
-### Power Envelope Control (`SCSOrchestrator`)
-
-Prevents cold-start power spikes and CPU starvation by throttling concurrent GMM/Farneback calibration jobs:
-
-```python
-class StaggeredCalibrationSequencer:
-    batch_size = 4  # Maximum 4 cameras calibrating concurrently
-```
-
-### Physical Camera Displacement Detection (`PBT Optimizer`)
-
-Traffic cameras deployed on bridges and poles can shift due to high winds or collisions. The optimizer monitors abrupt composite score drops:
-
-$$\text{SCS}_{\text{previous}} > 90\% \quad \land \quad \text{SCS}_{\text{current}} < 50\% \implies \text{PHYSICAL DISPLACEMENT DETECTED}$$
-
-**Emergency Response**:
-1. Camera state reverts to `SCS_CALIBRATION`.
-2. Stale topology is purged from GPU VRAM.
-3. An emergency recalibration event is dispatched to the desktop operator dashboard.
-
-### Phantom Track Purging (Kinematic Sanity Check)
-
-To prevent glare or lens reflections from generating false counts, tracks showing impossible velocities (> 300 pixels/frame displacement) are instantly purged.
+- [F.E.N.I.X. Supervisor](fenix_supervisor.md)
+- [GPU Pipeline & Gearboxes](gpu_pipeline.md)
+- [Vision Subsystem](vision_subsystem.md)
+- [Data Egress & Flow Engine](data_egress.md)
+- [API & IPC Reference](api_and_ipc_reference.md)
 
 ---
 
-## Related Documents
-
-- [🏠 Main Index / MOC](../index.md)
-- [🏗️ Architecture Overview](architecture_overview.md)
-- [👁️ Computer Vision Subsystem](vision_subsystem.md)
-- [⚡ GPU Inference Pipeline](gpu_pipeline.md)
-- [📤 Data Egress & Telemetry](data_egress.md)
-- [🌐 Go Synapse Dispatcher](synapse_dispatcher_go.md)
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
-</div>
+*SVISION Core Documentation — v1.2.0 (2026-11-16)*

@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -163,6 +166,14 @@ class StdioDaemon:
             if task and not task.done():
                 task.cancel()
 
+        # Stop pipeline orchestrator & workers
+        try:
+            from src.engine.pipeline_orchestrator import pipeline
+            if pipeline.is_active:
+                pipeline.stop()
+        except Exception:
+            pass
+
         # Disconnect Synapse UDS client
         try:
             from src.network.synapse_uds_client import synapse_uds_client
@@ -188,13 +199,51 @@ class StdioDaemon:
         except Exception:
             pass
 
+        # Cleanly stop Go Synapse Dispatcher if spawned by master bootstrapper
+        for mod_name in ("__main__", "svision"):
+            mod = sys.modules.get(mod_name)
+            cleanup_fn = getattr(mod, "cleanup_synapse_dispatcher", None)
+            if callable(cleanup_fn):
+                try:
+                    cleanup_fn()
+                except Exception:
+                    pass
+                break
+
         logger.info("[SVision] Graceful shutdown complete. Exiting.")
         if self.on_shutdown_cb:
             self.on_shutdown_cb()
 
 
+async def _hydrate_persisted_cameras(cameras: list) -> None:
+    """Connects persisted cameras from SQLite to stream decoder, SCS, and Go dispatcher."""
+    if not cameras:
+        return
+    from src.vision.stream_decoder import stream_decoder
+    from src.engine.scs_orchestrator import scs_orchestrator
+    from src.network.synapse_uds_client import synapse_uds_client
+
+    for cam in cameras:
+        cam_id = cam.get("id")
+        address = cam.get("address", "")
+        if not cam_id:
+            continue
+        if address:
+            await stream_decoder.connect_camera(cam_id, address)
+        scs_orchestrator.enqueue_cold_start(cam_id)
+        await synapse_uds_client.attach_camera(
+            cam_id,
+            sensor_id=cam.get("sensor_id", cam_id),
+            preferred_port=int(cam.get("synapse_port") or 0),
+        )
+
+
 def main():
     """Entry point for the headless STDIO daemon."""
+    from src.common.database import sqlite_repository
+    from src.common.state_manager import state_manager
+
+    persisted_cameras = state_manager.attach_persistence(sqlite_repository, load_existing=True)
     daemon = StdioDaemon()
 
     def _signal_handler(signum, frame):
@@ -222,8 +271,9 @@ def main():
     t_telemetry = loop.create_task(daemon.broadcaster.run_loop())
     t_pipeline = loop.create_task(pipeline.execute_main_engine_loop())
     t_scs = loop.create_task(scs_orchestrator.run_sequence())
+    t_hydrate = loop.create_task(_hydrate_persisted_cameras(persisted_cameras))
 
-    daemon._bg_tasks.extend([t_uds, t_telemetry, t_pipeline, t_scs])
+    daemon._bg_tasks.extend([t_uds, t_telemetry, t_pipeline, t_scs, t_hydrate])
 
     logger.info("─" * 60)
     logger.info("SVision Headless Daemon initialized (SOLID STDIO Architecture)")

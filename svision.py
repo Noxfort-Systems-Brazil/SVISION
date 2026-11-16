@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -27,6 +30,7 @@ Coordinates launching the Tauri v2 Desktop GUI or running in Headless Daemon mod
 
 import sys
 import os
+import atexit
 import shutil
 import signal
 import platform
@@ -110,16 +114,28 @@ def _ensure_synapse_dispatcher():
             sys.stderr.write(f"[SVision] ⚠️ Failed to start Go Synapse Dispatcher: {e}\n")
 
 
-def _hard_kill(signum, frame):
-    """Immediate graceful shutdown handler."""
-    sys.stderr.write("\n[SVision] Termination signal received. Exiting.\n")
+def cleanup_synapse_dispatcher():
+    """Terminates the Go Synapse Dispatcher child process cleanly if still running."""
     global _synapse_proc
     if _synapse_proc and _synapse_proc.poll() is None:
         try:
             _synapse_proc.terminate()
             _synapse_proc.wait(timeout=2.0)
         except Exception:
-            _synapse_proc.kill()
+            try:
+                _synapse_proc.kill()
+            except Exception:
+                pass
+    _synapse_proc = None
+
+
+atexit.register(cleanup_synapse_dispatcher)
+
+
+def _hard_kill(signum, frame):
+    """Immediate graceful shutdown handler."""
+    sys.stderr.write("\n[SVision] Termination signal received. Exiting.\n")
+    cleanup_synapse_dispatcher()
     try:
         import gc
         gc.collect()
@@ -207,6 +223,23 @@ def start_daemon():
     daemon_main()
 
 
+def start_supervisor():
+    """Starts the F.E.N.I.X. Out-of-Process Master Supervisor for SVision."""
+    from src.fenix.fenix_supervisor import FenixSupervisor
+    import time
+    sys.stderr.write("[SVision] 🛡️ Starting F.E.N.I.X. Guardian Supervisor...\n")
+    supervisor = FenixSupervisor(
+        default_command=[sys.executable, os.path.abspath(__file__), "--daemon"]
+    )
+    if supervisor.start():
+        try:
+            while supervisor.is_child_alive or supervisor.state.value not in ("HALTED", "IDLE"):
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            sys.stderr.write("\n[SVision] Supervisor interrupted by user. Stopping...\n")
+            supervisor.stop()
+
+
 # ── Step 4: Entry Point ─────────────────────────────────────────────
 
 def main():
@@ -220,7 +253,9 @@ def main():
     _ensure_synapse_dispatcher()
 
     args = sys.argv[1:]
-    if "--daemon" in args or "--engine-core" in args or "--headless" in args or os.environ.get("SVISION_HEADLESS") == "1":
+    if "--supervisor" in args or "--fenix" in args:
+        start_supervisor()
+    elif "--daemon" in args or "--engine-core" in args or "--headless" in args or os.environ.get("SVISION_HEADLESS") == "1":
         sys.stderr.write("[SVision] Executing in Headless IPC Daemon mode...\n")
         start_daemon()
     else:

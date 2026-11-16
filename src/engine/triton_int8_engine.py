@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -29,6 +32,7 @@ Manages:
      - Automatically evicts idle heavy models after Dwell Time (default 30s) to free VRAM.
 """
 
+import json
 import os
 import time
 import logging
@@ -58,9 +62,26 @@ class TritonInt8Engine:
         
         # Loaded model instances in VRAM
         self._loaded_models: Dict[str, Any] = {}
+        # Max batch size supported by each loaded model / engine profile
+        self._gear_max_batch: Dict[str, int] = {}
         # Last access timestamp per gear for idle eviction
         self._last_access: Dict[str, float] = {}
         self._is_cuda = torch.cuda.is_available()
+
+    @staticmethod
+    def _read_engine_batch_limit(engine_path: str) -> int:
+        """Reads embedded Ultralytics engine metadata batch limit, defaulting to config.TRT_MAX_BATCH."""
+        default_limit = max(1, int(getattr(config, "TRT_MAX_BATCH", 16)))
+        try:
+            with open(engine_path, "rb") as f:
+                meta_len = int.from_bytes(f.read(4), byteorder="little")
+                if 0 < meta_len < 1_048_576:
+                    meta = json.loads(f.read(meta_len).decode("utf-8"))
+                    if isinstance(meta, dict) and isinstance(meta.get("batch"), int) and meta["batch"] > 0:
+                        return meta["batch"]
+        except Exception:
+            pass
+        return default_limit
 
     def initialize_base_model(self):
         """Pre-loads the base anchor (Nano INT8) permanently into VRAM."""
@@ -92,10 +113,15 @@ class TritonInt8Engine:
             # Prefer compiled TensorRT engine
             if os.path.isfile(engine_path):
                 model = YOLO(engine_path, task="detect")
-                logger.info(f"[TritonInt8Engine] [{gear_name}] TensorRT INT8 engine loaded from cache.")
+                self._gear_max_batch[gear_name] = self._read_engine_batch_limit(engine_path)
+                logger.info(
+                    f"[TritonInt8Engine] [{gear_name}] TensorRT engine loaded from cache "
+                    f"(max_batch={self._gear_max_batch[gear_name]})."
+                )
             elif os.path.isfile(pt_path):
                 logger.info(f"[TritonInt8Engine] [{gear_name}] Engine not found. Loading PyTorch weights {weights_file}...")
                 model = YOLO(pt_path)
+                self._gear_max_batch[gear_name] = max(1, int(getattr(config, "TRT_MAX_BATCH", 16)))
             else:
                 logger.warning(f"[TritonInt8Engine] Model file missing: {pt_path}")
                 return None
@@ -140,37 +166,42 @@ class TritonInt8Engine:
             return []
 
         model = self.get_model(gear)
+        active_gear = gear
         if model is None:
             # Fallback to Nano if selected gear failed
             model = self.get_model("Nano")
+            active_gear = "Nano"
             if model is None:
                 return [[] for _ in crops]
 
+        max_batch = max(1, int(self._gear_max_batch.get(active_gear, getattr(config, "TRT_MAX_BATCH", 16))))
         t0 = time.time()
         all_results = [[] for _ in crops]
 
         try:
-            # Single batched forward pass on GPU
-            results = model(crops, verbose=False, half=self._is_cuda)
             valid_classes = {"car", "truck", "bus", "motorcycle"}
 
-            for i, r in enumerate(results):
-                dets = []
-                if r.boxes is not None:
-                    for box in r.boxes:
-                        conf = float(box.conf[0])
-                        cls_id = int(box.cls[0])
-                        class_name = model.names[cls_id] if hasattr(model, "names") else "vehicle"
+            for start in range(0, len(crops), max_batch):
+                chunk = crops[start:start + max_batch]
+                results = model(chunk, verbose=False, half=self._is_cuda)
 
-                        if class_name in valid_classes and conf >= conf_threshold:
-                            xyxy = box.xyxy[0].tolist()
-                            x1, y1, x2, y2 = xyxy
-                            dets.append({
-                                "class": class_name,
-                                "confidence": round(conf, 3),
-                                "bbox": [x1, y1, x2 - x1, y2 - y1]
-                            })
-                all_results[i] = dets
+                for i, r in enumerate(results):
+                    dets = []
+                    if r.boxes is not None:
+                        for box in r.boxes:
+                            conf = float(box.conf[0])
+                            cls_id = int(box.cls[0])
+                            class_name = model.names[cls_id] if hasattr(model, "names") else "vehicle"
+
+                            if class_name in valid_classes and conf >= conf_threshold:
+                                xyxy = box.xyxy[0].tolist()
+                                x1, y1, x2, y2 = xyxy
+                                dets.append({
+                                    "class": class_name,
+                                    "confidence": round(conf, 3),
+                                    "bbox": [x1, y1, x2 - x1, y2 - y1]
+                                })
+                    all_results[start + i] = dets
 
         except Exception as e:
             logger.error(f"[TritonInt8Engine] Batched inference error: {e}")

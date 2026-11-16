@@ -9,6 +9,7 @@
         "serve": "vite preview",
         "test": "vitest run",
         "test:watch": "vitest",
+        "record": "node record_presentation.cjs",
         "tauri": "LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu tauri",
         "start": "npm run tauri -- dev"
     },
@@ -33,6 +34,7 @@
         "@vitejs/plugin-react": "^6.0.1",
         "autoprefixer": "^10.4.27",
         "jsdom": "^30.0.1",
+        "playwright": "^1.63.0",
         "postcss": "^8.5.8",
         "tailwindcss": "^4.2.2",
         "vite": "^8.0.2",

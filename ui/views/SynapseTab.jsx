@@ -2,6 +2,9 @@
  * SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
  * Copyright (C) 2026 Noxfort Systems
  *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 Noxfort Systems
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
  * published by the Free Software Foundation, either version 3 of the
@@ -21,7 +24,7 @@
  *
  * Description: Network egress and Synapse telemetry dashboard monitoring port bindings, latency, and socket status.
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { EChart } from '../components/EChart';
 import { MetricCard } from '../components/MetricCard';
 import { useNetworkLatency } from '../hooks/useNetworkLatency';
@@ -30,7 +33,7 @@ import { useCameras } from '../hooks/useCameras';
 import { ipcClient } from '../services/ipc_client';
 import { useTranslation } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { Network, DatabaseZap, ServerOff, Radio, Server, CheckCircle2 } from 'lucide-react';
+import { Network, DatabaseZap, Radio, Server, CheckCircle2 } from 'lucide-react';
 import { Modal } from '../components/Modal';
 
 export function SynapseTab() {
@@ -40,9 +43,23 @@ export function SynapseTab() {
     const { t } = useTranslation();
     const { theme } = useTheme();
 
-    const [hostInput, setHostInput] = useState('127.0.0.1');
+    const [hostInput, setHostInput] = useState(ipcClient.synapseHost || '127.0.0.1');
+    const [synapsePorts, setSynapsePorts] = useState({});
     const [isSaving, setIsSaving] = useState(false);
     const [saveSuccess, setSaveSuccess] = useState(false);
+
+    useEffect(() => {
+        const unsubHost = ipcClient.subscribe('synapse_host', (host) => {
+            if (host) setHostInput(host);
+        });
+        const unsubPorts = ipcClient.subscribe('synapse_ports', (ports) => {
+            if (ports && typeof ports === 'object') setSynapsePorts(ports);
+        });
+        return () => {
+            unsubHost();
+            unsubPorts();
+        };
+    }, []);
 
     const handleSaveHost = (e) => {
         e.preventDefault();
@@ -237,12 +254,14 @@ export function SynapseTab() {
                                 </tr>
                             ) : (
                                 cameras.map((cam) => {
-                                    const port = cam.synapse_port || 9001;
-                                    const isConnected = cam.synapse_status === 'CONNECTED';
+                                    const boundInfo = synapsePorts[cam.id] || {};
+                                    const port = boundInfo.port || cam.synapse_port || 9001;
+                                    const synStatus = boundInfo.status || cam.synapse_status || 'READY';
+                                    const isConnected = synStatus === 'CONNECTED';
                                     return (
                                         <tr key={cam.id} className="hover:bg-muted/20 transition-colors">
                                             <td className="py-3 font-medium text-foreground">{cam.name}</td>
-                                            <td className="py-3 font-mono text-muted-foreground">{cam.sensor_id || cam.id}</td>
+                                            <td className="py-3 font-mono text-muted-foreground">{boundInfo.sensor_id || cam.sensor_id || cam.id}</td>
                                             <td className="py-3 font-mono text-indigo-400 font-semibold">{port}</td>
                                             <td className="py-3 font-mono text-muted-foreground">{hostInput}:{port}</td>
                                             <td className="py-3 text-right">
@@ -252,7 +271,7 @@ export function SynapseTab() {
                                                         : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
                                                 }`}>
                                                     <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
-                                                    {cam.synapse_status || 'READY'}
+                                                    {synStatus}
                                                 </span>
                                             </td>
                                         </tr>

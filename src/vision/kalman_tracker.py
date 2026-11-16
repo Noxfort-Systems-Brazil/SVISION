@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -58,6 +61,19 @@ class KalmanPredictiveTracker:
         )
         self._flow_predictor = flow_predictor or OpticalFlowPredictor()
         self._tracks: Dict[str, Track] = {}
+        self._kf_states: Dict[str, tuple] = {}  # tid -> (x[4], P[4,4])
+        self._F = np.array([
+            [1.0, 0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+        self._H = np.array([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ], dtype=np.float64)
+        self._Q = np.diag([0.5, 0.5, 2.0, 2.0])
+        self._R = np.diag([4.0, 4.0])
         self._next_id = 0
 
     def _get_next_id(self) -> str:
@@ -75,20 +91,37 @@ class KalmanPredictiveTracker:
 
     def initialize_track(self, object_id: str, bbox: list, class_name: str) -> Track:
         """
-        Initializes or updates track position and calculates velocity vector
-        from positional delta.
+        Initializes or updates track position using a linear 2D constant-velocity Kalman filter.
         """
         prev = self._tracks.get(object_id)
-        velocity = [0.0, 0.0]
-
-        if prev is not None:
-            velocity = [
-                float(bbox[0] - prev.bbox[0]),
-                float(bbox[1] - prev.bbox[1])
-            ]
-
+        bx, by = float(bbox[0]), float(bbox[1])
         hits = (prev.hits if prev else 0) + 1
         confirmed = hits >= self._config.tentative_frames
+
+        if prev is None or object_id not in self._kf_states:
+            velocity = [0.0, 0.0]
+            x_state = np.array([bx, by, 0.0, 0.0], dtype=np.float64)
+            P_cov = np.diag([10.0, 10.0, 50.0, 50.0])
+            self._kf_states[object_id] = (x_state, P_cov)
+        elif hits == 2:
+            dx = bx - float(prev.bbox[0])
+            dy = by - float(prev.bbox[1])
+            velocity = [dx, dy]
+            x_state = np.array([bx, by, dx, dy], dtype=np.float64)
+            P_cov = np.diag([4.0, 4.0, 10.0, 10.0])
+            self._kf_states[object_id] = (x_state, P_cov)
+        else:
+            x_prev, P_prev = self._kf_states[object_id]
+            x_pred = self._F @ x_prev
+            P_pred = self._F @ P_prev @ self._F.T + self._Q
+            z = np.array([bx, by], dtype=np.float64)
+            y = z - (self._H @ x_pred)
+            S = self._H @ P_pred @ self._H.T + self._R
+            K = np.linalg.solve(S.T, (P_pred @ self._H.T).T).T
+            x_new = x_pred + K @ y
+            P_new = (np.eye(4, dtype=np.float64) - K @ self._H) @ P_pred
+            self._kf_states[object_id] = (x_new, P_new)
+            velocity = [round(float(x_new[2]), 4), round(float(x_new[3]), 4)]
 
         track = Track(
             track_id=object_id,
@@ -144,9 +177,12 @@ class KalmanPredictiveTracker:
           Stage 2: Match low-confidence detections against remaining tracks (relaxed IoU).
         """
         if not detections:
-            for track in self._tracks.values():
+            for tid, track in list(self._tracks.items()):
                 track.time_since_update += 1
-                track.age += 1
+                if track.confirmed and track.time_since_update <= 2:
+                    self.predict_missed_frame(tid)
+                else:
+                    track.age += 1
             self.prune_stale_tracks()
             return []
 
@@ -181,6 +217,7 @@ class KalmanPredictiveTracker:
                 matched_dets.add(("high", di))
 
                 high_dets[di]["track_id"] = tid
+                high_dets[di]["velocity"] = list(self._tracks[tid].velocity)
                 results.append(high_dets[di])
 
                 iou_mat[ti, :] = 0
@@ -210,6 +247,7 @@ class KalmanPredictiveTracker:
                 matched_dets.add(("low", di))
 
                 low_dets[di]["track_id"] = tid
+                low_dets[di]["velocity"] = list(self._tracks[tid].velocity)
                 results.append(low_dets[di])
 
                 iou_mat[ti, :] = 0
@@ -223,11 +261,15 @@ class KalmanPredictiveTracker:
                 det["track_id"] = new_id
                 results.append(det)
 
-        # Increment age on unmatched tracks
+        # Advance short occlusion gaps on confirmed tracks and increment unmatched age
         for tid in active_track_ids:
             if tid not in matched_tracks:
-                self._tracks[tid].time_since_update += 1
-                self._tracks[tid].age += 1
+                trk = self._tracks[tid]
+                trk.time_since_update += 1
+                if trk.confirmed and trk.time_since_update <= 2:
+                    self.predict_missed_frame(tid)
+                else:
+                    trk.age += 1
 
         self.prune_stale_tracks()
         return results
@@ -240,6 +282,7 @@ class KalmanPredictiveTracker:
         ]
         for tid in stale_ids:
             del self._tracks[tid]
+            self._kf_states.pop(tid, None)
             logger.debug(f"Pruned stale track {tid} (exceeded {self._config.max_age} frames)")
 
     def predict_missed_frame(

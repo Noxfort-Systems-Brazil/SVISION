@@ -1,47 +1,32 @@
-<div align="center">
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
+# SVISION Core — Portail de Documentation (Français)
 
-# SVISION — Suite de Documentation Technique
-### Synapse Vision — Architecture Edge, Vision par Ordinateur et Framework IPC Zero-Port
-*Noxfort Systems — A State Of Art Company*
+> **Langue / Language :** [English (Complet)](../en/README.md) · [Português (Complet)](../pt-br/README.md) · [Español](../es/README.md) · **Français** · [Русский](../ru/README.md) · [中文](../zh/README.md)
 
-[![Status](https://img.shields.io/badge/Status-Actif-brightgreen?style=flat&logo=github)](https://github.com/Noxfort-Systems-Brazil/SVISION)
-[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat&logo=python&logoColor=white)](https://python.org/)
-[![Tauri](https://img.shields.io/badge/Tauri-2.0%2B-FFC131?style=flat&logo=tauri&logoColor=black)](https://tauri.app/)
-[![React](https://img.shields.io/badge/React-19.2-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
-[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![TensorRT](https://img.shields.io/badge/TensorRT-10.x-76B900?style=flat&logo=nvidia&logoColor=white)](https://developer.nvidia.com/tensorrt)
+**SVISION Core v1.2.0** est un moteur distribué d'intelligence routière en temps réel combinant **Tauri v2 / React 18**, inférence GPU en **Python 3.12 (TensorRT INT8 + Superviseur F.E.N.I.X.)** et un sidecar réseau **Zero-Backlog en Go (`bin/synapse-dispatcher`)**.
 
 ---
 
-🌐 **Traductions / Langues :** **[🇺🇸 English](../en/README.md)** • **[🇧🇷 Português](../pt-br/README.md)** • **[🇪🇸 Español](../es/README.md)** • **[🇫🇷 Français](README.md)** • **[🇷🇺 Русский](../ru/README.md)** • **[🇨🇳 简体中文](../zh/README.md)** • **[📚 Portail de Documentation](../index.md)**
+## Guides Locaux et Documentation Technique Complète
+
+- [Vue d'ensemble de l'Architecture (Français)](architecture_overview.md)
+- [Index Principal du Dépôt (EN)](../en/svision_moc.md)
+- [Superviseur de Résilience F.E.N.I.X. (EN)](../en/fenix_supervisor.md)
+- [Pipeline GPU 12 FPS et Vitesses Dynamiques (EN)](../en/gpu_pipeline.md)
+- [Sous-système Vision et Homographie (EN)](../en/vision_subsystem.md)
+- [Cycle de Vie des Caméras et Calibration (EN)](../en/camera_lifecycle.md)
+- [Architecture IPC STDIN/STDOUT & UDS (EN)](../en/ipc_architecture.md)
+- [Synapse Dispatcher Go (EN)](../en/synapse_dispatcher_go.md)
+- [Flux Zero-Backlog et FluidFlowEstimator (EN)](../en/data_egress.md)
+- [Interface Desktop Tauri / React & Mode Démo (EN)](../en/desktop_ui_tauri.md)
+- [Sécurité, Confidentialité et Conformité RGPD/LGPD (EN)](../en/security_lgpd.md)
+- [Référence API et Contrats IPC (EN)](../en/api_and_ipc_reference.md)
+- [Référence Configuration et SQLite (EN)](../en/configuration_reference.md)
+- [Développement, Compilation INT8 et Tests (EN)](../en/development_testing.md)
+- [Déploiement, Conteneurs et Opérations (EN)](../en/deployment_operations.md)
 
 ---
 
-</div>
-
-## Bienvenue dans la Documentation Technique Officielle
-
-Ce répertoire rassemble la documentation technique en **Français** pour **SVISION** — une plateforme souveraine d'intelligence artificielle en périphérie (*Sovereign Edge AI*) conçue pour l'analyse du trafic urbain en temps réel et l'orchestration autonome des signaux sans fuite de flux vidéo.
-
-## Répertoire des Guides Techniques
-
-| Document | Thème | Contenu Principal |
-|---|---|---|
-| 📚 **[Central Master (MOC)](../en/svision_moc.md)** | Index & Graphe de Connaissances | Aperçu du code, hiérarchie architecturale et navigation bidirectionnelle sous Obsidian. |
-| 🏗️ **[Architecture Système](../en/architecture_overview.md)** | Architecture Fondamentale | Modèle tripartite : shell desktop Tauri v2 (Rust), moteur cognitif Python/CUDA et passerelle réseau Go. |
-| ⚡ **[Pipeline d'Inférence GPU](../en/gpu_pipeline.md)** | Accélération TensorRT | Consommateur de lots CUDA centralisé, boîte de vitesses YOLO 11 et recadrage neuronal par zones d'intérêt. |
-| 👁️ **[Sous-système de Vision](../en/vision_subsystem.md)** | Traitement Vidéo & Suivi | Décodage matériel NVDEC, suivi cinématique ByteTrack et calcul de vitesse par homographie. |
-| 🔌 **[Architecture IPC Zero-Port](../en/ipc_architecture.md)** | Communication Inter-Processus | Communication par tubes système (`STDIN`/`STDOUT`) en JSON-ND sans aucun port réseau ouvert. |
-| 🌐 **[Dispatcher Go Synapse](../en/synapse_dispatcher_go.md)** | Passerelle Réseau | Serveur local Unix Domain Socket (UDS 0o600) et multiplexeur de flux TCP vers le cluster Synapse. |
-| 🔒 **[Sécurité et Conformité LGPD](../en/security_lgpd.md)** | Souveraineté Périphérique | Traitement 100% local, aucune sortie de trames d'images brutes et assainissement actif de la mémoire. |
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Ingénierie de Vision Périphérique Souveraine • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licencié sous AGPLv3.</small>
-</div>
+*Documentation SVISION Core — v1.2.0 (2026-11-16)*

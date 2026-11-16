@@ -69,6 +69,13 @@ site/
 *.swp
 *.swo
 
+# Media & Recordings
+recordings/
+*.mp4
+*.webm
+*.avi
+*.mkv
+
 # OS files
 .DS_Store
 Thumbs.db

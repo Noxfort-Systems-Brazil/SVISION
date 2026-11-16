@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -82,7 +85,7 @@ class PipelineSupervisor:
         self._slice_scheduler = slice_scheduler
 
     def _resolve_dependencies(self):
-        """Lazy-loads system singletons as default fallback if not injected."""
+        """Lazy-loads stateless system singletons as default fallback if not injected."""
         if self._state_mgr is None:
             from src.common.state_manager import state_manager
             self._state_mgr = state_manager
@@ -92,18 +95,12 @@ class PipelineSupervisor:
         if self._inferencer is None:
             from src.engine.inference_node import inference_node
             self._inferencer = inference_node
-        if self._tracker is None:
-            from src.vision.kalman_tracker import create_tracker
-            self._tracker = create_tracker()
         if self._batcher is None:
             from src.network.micro_batcher import batcher
             self._batcher = batcher
         if self._lane_mapper is None:
             from src.vision.lane_mapper import lane_mapper
             self._lane_mapper = lane_mapper
-        if self._gearbox is None:
-            from src.engine.model_gearbox import gearbox
-            self._gearbox = gearbox
         if self._synapse is None:
             from src.network.synapse_builder import synapse_builder
             self._synapse = synapse_builder
@@ -111,17 +108,31 @@ class PipelineSupervisor:
             from src.engine.slice_scheduler import slice_scheduler
             self._slice_scheduler = slice_scheduler
 
+    def _create_isolated_tracker(self):
+        """Returns injected tracker (for tests) or a dedicated tracker per camera."""
+        if self._tracker is not None:
+            return self._tracker
+        from src.vision.kalman_tracker import create_tracker
+        return create_tracker()
+
+    def _create_isolated_gearbox(self):
+        """Returns injected gearbox (for tests) or a dedicated ModelGearbox per camera."""
+        if self._gearbox is not None:
+            return self._gearbox
+        from src.engine.model_gearbox import ModelGearbox
+        return ModelGearbox()
+
     def create_agent(self, cam_id: str) -> CameraAgent:
-        """Factory method to create a CameraAgent wired with the supervisor's dependencies."""
+        """Factory method to create a CameraAgent wired with isolated per-camera tracker/gearbox."""
         return CameraAgent(
             cam_id,
             state_mgr=self._state_mgr,
             decoder=self._decoder,
             inferencer=self._inferencer,
-            tracker_engine=self._tracker,
+            tracker_engine=self._create_isolated_tracker(),
             batcher=self._batcher,
             lane_mapper_inst=self._lane_mapper,
-            gearbox_inst=self._gearbox,
+            gearbox_inst=self._create_isolated_gearbox(),
             auditor=self._auditor,
             synapse=self._synapse,
             worker_pool=self._worker_pool,

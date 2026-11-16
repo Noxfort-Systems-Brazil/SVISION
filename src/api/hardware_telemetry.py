@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -52,8 +55,11 @@ class HardwareTelemetry:
     
     def __init__(self):
         self._gpu_health_degraded = False
+        self._net_initialized = False
         self._prev_net_bytes = 0
         self._prev_net_ts = time.time()
+        self._prev_dropped_frames = 0
+        self._prev_received_frames = 0
         self._last_metrics: Dict[str, float] = {
             "cpu_usage": 0, "ram_usage": 0, "vram_usage": 0,
             "temperature": 0, "dropped_frames": 0, "fps_average": 0
@@ -73,6 +79,7 @@ class HardwareTelemetry:
         cpu_usage = psutil.cpu_percent()
         ram_usage = psutil.virtual_memory().percent
         vram_usage = 0
+        vram_total = 0
         temperature = 0
         gpu_alert = None
         
@@ -81,6 +88,7 @@ class HardwareTelemetry:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                 mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
                 vram_usage = int(mem_info.used / (1024 * 1024))  # MB
+                vram_total = int(mem_info.total / (1024 * 1024))  # MB
                 temperature = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
                 
                 if self._gpu_health_degraded:
@@ -111,6 +119,7 @@ class HardwareTelemetry:
             "cpu_usage": cpu_usage, "cpu_trend": cpu_trend,
             "ram_usage": ram_usage, "ram_trend": ram_trend,
             "vram_usage": vram_usage, "vram_trend": vram_trend,
+            "vram_total": vram_total,
             "temperature": temperature, "temp_trend": temp_trend,
             "gpu_alert": gpu_alert,
         }
@@ -137,23 +146,43 @@ class HardwareTelemetry:
             "fps_trend": fps_trend,
         }
 
-    def sample_network(self, active_ws: int, active_streams: int, dropped_frames: int) -> Dict[str, Any]:
-        """Computes network bandwidth and packet delivery stats."""
+    def sample_network(
+        self,
+        active_ws: int,
+        active_streams: int,
+        dropped_frames: int,
+        frames_received: int = 0,
+    ) -> Dict[str, Any]:
+        """Computes network bandwidth and packet delivery stats using interval deltas."""
         now = time.time()
         total_connections = active_ws + active_streams
-        
+
         try:
             net_io = psutil.net_io_counters()
             total_bytes_now = net_io.bytes_sent + net_io.bytes_recv
-            elapsed = max(now - self._prev_net_ts, 0.001)
-            bandwidth_mbps = round((total_bytes_now - self._prev_net_bytes) / elapsed / (1024 * 1024), 2)
+            if not self._net_initialized:
+                self._net_initialized = True
+                bandwidth_mbps = 0.0
+            else:
+                elapsed = max(now - self._prev_net_ts, 0.001)
+                delta_bytes = max(0, total_bytes_now - self._prev_net_bytes)
+                bandwidth_mbps = round(delta_bytes / elapsed / (1024 * 1024), 2)
             self._prev_net_bytes = total_bytes_now
             self._prev_net_ts = now
         except Exception:
-            bandwidth_mbps = 0
+            bandwidth_mbps = 0.0
 
-        total_expected = max(active_streams * 30, 1)
-        delivery = round(max(0, (1 - dropped_frames / max(total_expected, 1))) * 100, 2)
+        delta_dropped = max(0, dropped_frames - self._prev_dropped_frames)
+        self._prev_dropped_frames = dropped_frames
+
+        if frames_received > 0:
+            delta_received = max(0, frames_received - self._prev_received_frames)
+            self._prev_received_frames = frames_received
+            interval_total = delta_received + delta_dropped
+            delivery = round((delta_received / interval_total) * 100.0, 2) if interval_total > 0 else 100.0
+        else:
+            expected_tick = max(active_streams * 12, 1)
+            delivery = round(max(0.0, (1.0 - (delta_dropped / float(expected_tick))) * 100.0), 2)
 
         return {
             "active_connections": total_connections,

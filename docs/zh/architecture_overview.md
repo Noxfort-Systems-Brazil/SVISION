@@ -1,55 +1,26 @@
-# 🏛️ SVISION: 三位一体系统架构
-### 专为主权城市交通边缘计算设计的 AI 平台
-*Noxfort Systems — A State Of Art Company*
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-⬅️ [文档中心](README.md) | ⚡ [GPU 推理流水线](../en/gpu_pipeline.md) | 🔌 [零端口 IPC](../en/ipc_architecture.md) | 🌐 [Go 分发器](../en/synapse_dispatcher_go.md)
+# 架构概览 — SVISION Core v1.2.0
 
----
+SVISION Core 采用三层解耦架构，结合 **F.E.N.I.X. 容错监管器**、**12 FPS 标准时间片调度（`SliceScheduler`）** 以及面向 Synapse 节点的 **Zero-Backlog（零积压即发即弃）** 实时分发机制。
 
-## 1. 三位一体主权边缘模型
-
-**SVISION** 将系统职责解耦为三个专业、高效协作的操作系统进程：
-
-1. **桌面展示外壳 (Rust + Tauri v2 + React 19)**: 基于系统级 WebKitGTK 运行时，内存占用比 Electron 降低 ~80%，通过匿名操作系统管道通信。
-2. **边缘认知 AI 核心 (Python 3.12 + PyTorch + TensorRT)**: 利用 **NVIDIA NVDEC** 硅片实现零拷贝视频硬解，动态执行神经兴趣区域裁剪 (*Neural Crop & Zoom*)，并在 Tensor Cores 上执行 YOLO 11 批量推理。
-3. **网络守门员 (Go Synapse 分发器)**: 严格隔离网络栈，维护本地 Unix Domain Socket (`0o600`)，并将 1 Hz 结构化交通流数据通过多路复用 TCP 流发送至中央 Synapse 集群。
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                      三位一体系统架构                       │
-│                                                             │
-│  ┌──────────────┐     STDIN / STDOUT     ┌──────────────┐   │
-│  │ Tauri + React│ ◄════════════════════► │ Python Core  │   │
-│  │ (Rust 外壳)  │   (零网络端口管道)     │ (YOLO 11 TRT)│   │
-│  └──────────────┘                        └──────┬───────┘   │
-│                                                 │ UDS 0o600 │
-│                                                 ▼           │
-│                                          ┌──────────────┐   │
-│                                          │  Go Synapse  │   │
-│                                          │    分发器    │   │
-│                                          └──────┬───────┘   │
-└─────────────────────────────────────────────────┼───────────┘
-                                                  │ TCP 数据流
-                                                  ▼
-                                       ┌──────────────────────┐
-                                       │ Central Synapse Core │
-                                       └──────────────────────┘
+```mermaid
+flowchart LR
+    UI["Tauri v2 + React 18 工作站"] <-->|"NDJSON STDIN/STDOUT"| FENIX["F.E.N.I.X. 监管器 + Python 守护进程<br/>SliceScheduler 12 FPS / Triton INT8 / 2D 卡尔曼"]
+    FENIX -->|"UDS (/tmp/svision_synapse.sock, 0600)"| GO["Go Synapse 分发器<br/>bin/synapse-dispatcher"]
+    GO -->|"TCP NDJSON 零积压输出 (9001+)"| SYN["Synapse 节点"]
 ```
 
+## 核心设计原则
+
+1. **F.E.N.I.X. 自动容错（`src/fenix/`）：** 使用 `--supervisor` 或 `--fenix` 启动时，`FenixSupervisor` 持续监控工作进程，在异常退出时通过 `VisionStateReconciler` 清理显存并带退避重试恢复服务。
+2. **12 FPS GPU 推理流水线（`src/engine/`）：** `SliceScheduler` 以约 `83.3 ms` 节拍驱动周边运动提取（`MotionExtractor`）、动态批调度（`VipKernelScheduler`）、显存/温控保护（`ElasticGovernor`）与 TensorRT INT8 推理（`TritonInt8Engine`），并为每路相机隔离独立的 `ModelGearbox` 和线性 2D `KalmanTracker`。
+3. **零积压宏观交通流输出：** `FluidFlowEstimator` 与 `FireForgetBatcher` 聚合多方向交通流矢量（`direction_deg`、`speed`、`density`、`calibrated`、`is_heartbeat`），经由 `svision-go` 直接写入 TCP 套接字；若下游离线则立即丢弃数据包，防止过期数据堆积。
+4. **SQLite 持久化与隐私保护：** `svision_telemetry.db` 仅保存相机配置、`3x3` 单应性矩阵与匿名宏观交通统计，不持久化任何视频帧或车牌数据。
+
+完整英文技术规范请参阅 [Architecture Overview (EN)](../en/architecture_overview.md) 与 [F.E.N.I.X. Supervisor (EN)](../en/fenix_supervisor.md)。
+
 ---
 
-## 2. 核心工程原则
-
-- **边缘数据主权**: 100% 的计算机视觉流水线完全在本地边缘设备运行，无任何原始视频帧回传云端。
-- **零端口 IPC**: 桌面 UI 与 AI 引擎之间采用标准输入输出匿名管道，杜绝开放端口扫描风险。
-- **非阻塞数据输出**: 网络波动或中断时，数据自动暂存于内存 LRU 环形队列中，保证 GPU 推理持续流畅运行。
-- **安全合规设计**: 深度异常清洗机制 (`_sanitized_excepthook`)，确保任何图像张量不会意外泄漏到系统日志中。
-
----
-
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>主权边缘视觉工程 • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. 采用 AGPLv3 授权。</small>
-</div>
+*SVISION Core 文档 — v1.2.0 (2026-11-16)*

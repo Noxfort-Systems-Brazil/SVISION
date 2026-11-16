@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -28,12 +31,16 @@ Simplified architecture:
   - Maintains backward-compatible interfaces for all pipeline callers.
 """
 
+import json
 import math
 import logging
+import os
 from typing import List, Optional, Dict, Any
+import cv2
 import numpy as np
 
 from src.common.state_manager import state_manager
+from src.common.database import get_documents_dir
 
 logger = logging.getLogger("lane_mapper")
 
@@ -43,8 +50,34 @@ class AutoLaneMapper:
     Lightweight Node-Level Approach Resolver and Metric Speed Engine.
     """
 
-    def __init__(self):
+    def __init__(self, topology_dir: Optional[str] = None):
         self._default_approach = "node"
+        self._topologies: Dict[str, Dict[str, Any]] = {}
+        self._topology_dir = topology_dir or os.path.join(get_documents_dir(), "Svision", "topologies")
+
+    @staticmethod
+    def compute_homography_from_points(
+        image_points: List[List[float]],
+        world_points: List[List[float]],
+    ) -> Optional[List[List[float]]]:
+        """
+        Computes an invertible 3x3 pixel-to-world (meters) homography matrix from >= 4 point pairs.
+        Returns 3x3 list or None if degenerate.
+        """
+        if not image_points or not world_points or len(image_points) < 4 or len(image_points) != len(world_points):
+            return None
+        try:
+            src = np.array(image_points, dtype=np.float64).reshape(-1, 2)
+            dst = np.array(world_points, dtype=np.float64).reshape(-1, 2)
+            H, _ = cv2.findHomography(src, dst, method=0)
+            if H is None or H.shape != (3, 3):
+                return None
+            if abs(float(np.linalg.det(H))) < 1e-12:
+                return None
+            return H.tolist()
+        except Exception as e:
+            logger.warning(f"[LaneMapper] Homography estimation failed: {e}")
+            return None
 
     # ── Approach Resolution ─────────────────────────────────────────
 
@@ -109,13 +142,41 @@ class AutoLaneMapper:
         return []
 
     def has_topology(self, camera_id: str) -> bool:
+        topo_file = os.path.join(self._topology_dir, f"{camera_id}.json")
+        if camera_id in self._topologies or os.path.isfile(topo_file):
+            return True
+        # Node-level compatibility default: cameras operate without polygon files
         return True
 
     def load_topology(self, camera_id: str) -> bool:
+        topo_file = os.path.join(self._topology_dir, f"{camera_id}.json")
+        if os.path.isfile(topo_file):
+            try:
+                with open(topo_file, "r", encoding="utf-8") as f:
+                    self._topologies[camera_id] = json.load(f)
+            except Exception as e:
+                logger.warning(f"[LaneMapper] Failed loading topology {topo_file}: {e}")
+                return False
         return True
 
     def save_topology(self, camera_id: str, polygons, labels, centroids) -> bool:
-        return True
+        if polygons is None and labels is None and centroids is None:
+            return True
+        payload = {
+            "polygons": polygons.tolist() if hasattr(polygons, "tolist") else polygons,
+            "labels": list(labels) if labels is not None else [],
+            "centroids": [float(c) for c in centroids] if centroids is not None else [],
+        }
+        self._topologies[camera_id] = payload
+        try:
+            os.makedirs(self._topology_dir, exist_ok=True)
+            topo_file = os.path.join(self._topology_dir, f"{camera_id}.json")
+            with open(topo_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            return True
+        except Exception as e:
+            logger.warning(f"[LaneMapper] Failed saving topology for {camera_id}: {e}")
+            return False
 
     def classify_point_gpu(self, camera_id: str, x: float, y: float) -> str:
         return self.resolve_approach(camera_id, [0, 0, 0, 0], [x, y])

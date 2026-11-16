@@ -1,173 +1,106 @@
----
-title: "Go Synapse Dispatcher — Real-Time Network Gatekeeper & Multiplexer"
-tags: [svision, go, network, synapse, dispatcher, tcp, uds, architecture]
-aliases: ["Go Synapse Dispatcher", "Synapse Dispatcher", "svision-go"]
-updated: 2026-09-05
-category: "Network Egress & Synapse Dispatcher"
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-[🏠 Home](index.md) › **Go Synapse Dispatcher**
+# Synapse Dispatcher (Go)
+
+`svision-go/` (`package main`, compiled to `bin/synapse-dispatcher`) is SVISION Core's lightweight, zero-backlog network egress sidecar written in Go. It isolates raw TCP socket lifecycle, port allocation, and non-blocking NDJSON telemetry delivery from Python's GPU inference loop so slow or unreachable downstream Synapse nodes never cause Python GIL pauses or memory buildup.
 
 ---
 
-# Go Synapse Dispatcher — Real-Time Network Gatekeeper & Multiplexer
+## 1. Flat Package Structure & Responsibilities
 
-> SVision — Architecture Documentation  
-> Copyright © 2026 Gabriel Moraes — Noxfort Systems
+All Go source files reside in a single flat `main` package under `svision-go/`:
+
+| File | Responsibility |
+| :--- | :--- |
+| [`svision-go/main.go`](../svision-go/main.go) | CLI flag parsing (`--uds`, `--host`, `--base-port`), initializes `PortManager` and `UDSServer`, handles `SIGINT`/`SIGTERM` shutdown. |
+| [`svision-go/uds_server.go`](../svision-go/uds_server.go) | Unix Domain Socket listener (`/tmp/svision_synapse.sock`), restrictive `0600` permission hardening, 1 MB NDJSON line scanner, and command router. |
+| [`svision-go/port_manager.go`](../svision-go/port_manager.go) | Coordinates camera-to-port bindings (`AttachCamera`, `DetachCamera`, `PushData`, `UpdateHost`), tracks connected client count and status events. |
+| [`svision-go/port_allocator.go`](../svision-go/port_allocator.go) | Thread-safe TCP port pool starting from `--base-port` (default `9001`), preserving explicit `preferred_port` assignments when available. |
+| [`svision-go/camera_stream.go`](../svision-go/camera_stream.go) | Per-camera TCP connection worker (`runWorker`), `StreamDialer`/`DefaultTCPDialer` interface, synchronous zero-backlog `Push([]byte)`, and keepalive management. |
+| `svision-go/*_test.go` | Five unit/integration test files covering dialer mocks, port allocation, port manager, camera streams, and UDS server protocol. |
 
 ---
 
-## Overview
+## 2. Zero-Backlog Network Architecture (No Queues)
 
-The **Synapse Dispatcher** ([`svision-go/`](file:///home/gabriel-moraes/Documentos/SVISION_CORE/svision-go)) is an ultra-low latency, high-throughput network daemon engineered in **Go 1.22+**.
+A defining invariant of `svision-go` is **Zero-Backlog Fire-and-Forget Delivery**:
 
-It functions as an edge network **gatekeeper**, shielding the Python AI cognitive core from route variations, network packet drops, or upstream socket degradation on links to the central Synapse cluster.
-
-```
-┌───────────────────────────────────────────────────────────────┐
-│                      Go Synapse Dispatcher                    │
-│                                                               │
-│   ┌───────────────────────────────────────────────────────┐   │
-│   │                      UDSServer                        │   │
-│   │           Unix Domain Socket: /tmp/synapse.sock       │   │
-│   └───────────────────────────┬───────────────────────────┘   │
-│                               │ Commands and Telemetry        │
-│   ┌───────────────────────────▼───────────────────────────┐   │
-│   │                     PortManager                       │   │
-│   │  ┌─────────────────────────────────────────────────┐  │   │
-│   │  │ PortAllocator (Port allocations starting 9001+) │  │   │
-│   │  └─────────────────────────────────────────────────┘  │   │
-│   └──────┬────────────────────┬────────────────────┬──────┘   │
-│          │ Stream 1           │ Stream 2           │ Stream N │
-│   ┌──────▼───────┐     ┌──────▼───────┐     ┌──────▼───────┐  │
-│   │ CameraStream │     │ CameraStream │     │ CameraStream │  │
-│   │ (TCP Buffer) │     │ (TCP Buffer) │     │ (TCP Buffer) │  │
-│   └──────┬───────┘     └──────┬───────┘     └──────┬───────┘  │
-└──────────┼────────────────────┼────────────────────┼──────────┘
-           │ TCP 9001           │ TCP 9002           │ TCP 9003
-           ▼                    ▼                    ▼
-┌───────────────────────────────────────────────────────────────┐
-│                      Central Synapse Cluster                  │
-└───────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    PY["Python SynapseUDSClient<br/>src/network/synapse_uds_client.py"] -->|"UDS NDJSON: DATA"| UDS["UDSServer<br/>svision-go/uds_server.go"]
+    UDS -->|"Route by camera_id"| PM["PortManager<br/>svision-go/port_manager.go"]
+    PM -->|"Direct Push([]byte)"| CS["CameraStream (per camera)<br/>svision-go/camera_stream.go"]
+    CS -->|"TCP connected?"| CHECK{"conn != nil && !isClosed"}
+    CHECK -->|"Yes (100ms WriteDeadline)"| TCP["TCP Socket (NoDelay + KeepAlive)<br/>Target: host:port"]
+    CHECK -->|"No / Write error"| DROP["Immediate Drop (0 queues)<br/>Close dead conn + mark DISCONNECTED"]
 ```
 
----
-
-## Internal Components (`svision-go/`)
-
-### 1. `main.go` — Lifecycle & Initialization
-- Parses environmental configurations and CLI flags:
-  - `-uds`: Path to IPC Unix Domain Socket (Default: `/tmp/svision_synapse.sock` or `$SVISION_SYNAPSE_UDS_PATH`).
-  - `-host`: IP or hostname of target Synapse server (Default: `127.0.0.1` or `$SVISION_SYNAPSE_HOST`).
-  - `-base-port`: Base port for allocating per-sensor TCP streams (Default: `9001` or `$SVISION_SYNAPSE_BASE_PORT`).
-- Instantiates `PortManager` and `UDSServer`.
-- Catches OS termination signals (`SIGINT`, `SIGTERM`) for graceful teardown of all active TCP sockets.
-
-### 2. `uds_server.go` — Unix Domain Socket Server
-- Creates and binds the Unix socket with restrictive file permissions.
-- Parses newline-delimited (`\n`) JSON payloads streamed from Python ([`src/network/synapse_uds_client.py`](data-egress.md)).
-- Emits asynchronous `STATUS_CHANGE` events back to Python whenever a physical connection is established, dropped, or reconnected.
-
-### 3. `port_manager.go` & `port_allocator.go` — Dynamic Port Allocation
-- Manages dedicated TCP telemetry ports per active camera sensor.
-- Maintains a synchronized map (`sync.RWMutex`) linking camera IDs to open ports and `CameraStream` instances.
-- Prevents port collisions by allocating ports incrementally from `base-port`.
-
-### 4. `camera_stream.go` — TCP Stream Connection & Buffering
-- Maintains persistent outbound TCP connections to the central Synapse node.
-- Implements an internal buffered channel (`chan []byte`) for non-blocking telemetry enqueueing.
-- **Auto-Reconnection**: Executes an automated reconnect loop with exponential backoff on network link drops.
+- **No Buffered Channels:** Unlike buffered queue architectures, `CameraStream` does **not** allocate a bounded `chan []byte` queue. `Push(payload)` acquires the stream mutex and writes directly to the active `net.Conn` (appending `\n` if missing) with a strict **`100ms` write deadline**.
+- **Immediate Drop on Offline Target:** If `isClosed` or `conn == nil`, `Push(payload)` immediately returns `false` and drops the packet so stale traffic snapshots never accumulate or surge after reconnection.
+- **Background Reconnect Loop (`runWorker`):** Every **`2 seconds`**, each attached `CameraStream` checks if `conn == nil`. If disconnected, it emits `STATUS_CHANGE: "CONNECTING"` and attempts a TCP dial with a **`1500ms` timeout**.
+- **Low-Latency Socket Tuning (`DefaultTCPDialer`):**
+  - `TCP_NODELAY = true` (`SetNoDelay(true)`) — disables Nagle's algorithm so every telemetry packet flushes immediately.
+  - `KeepAlive = true`, `KeepAlivePeriod = 10s` — detects half-open links cleanly.
 
 ---
 
-## IPC Protocol over Unix Domain Socket
+## 3. UDS Control & Data Protocol
 
-Communication between Python and the Go Dispatcher uses structured JSON contracts:
+By default, `uds_server.go` creates `/tmp/svision_synapse.sock`, removes any stale socket file, binds a Unix stream socket, and enforces `chmod 0600` (customizable via `SVISION_SYNAPSE_UDS_MODE` environment variable). Scanner buffer max token size is `1 MB`.
 
-### 1. `ATTACH_CAMERA` Command (Python → Go)
-Registers a sensor and initiates the corresponding TCP connection:
+### Inbound Commands (Python → Go)
+
+| Command | Required / Optional Fields | Go Behavior & Response Event |
+| :--- | :--- | :--- |
+| **`ATTACH_CAMERA`** | `camera_id`, `sensor_id`, `preferred_port` | Allocates port via `PortAllocator`, starts `CameraStream.runWorker`, responds with **`CAMERA_BOUND`** (`status: "READY"`, `port`). |
+| **`DETACH_CAMERA`** | `camera_id` | Closes `CameraStream`, releases TCP port back to pool, responds with **`CAMERA_DETACHED`** (`status: "CLOSED"`). |
+| **`DATA`** | `camera_id`, `payload` | Looks up `CameraStream` by `camera_id` and executes `Push(payload)`. Silent fast-path on success (no per-packet UDS ack). |
+| **`UPDATE_CONFIG`** | `synapse_host` | Updates target host across `PortManager` and forces existing streams to redial against the new host; emits **`CONFIG_UPDATED`** (`status: "OK"`). |
+| **`PING`** | — | Responds immediately with **`PONG`** (`status: "OK"`). |
+
+### Outbound Status Events (Go → Python)
+
 ```json
-{
-    "cmd": "ATTACH_CAMERA",
-    "camera_id": "cam_01",
-    "sensor_id": "sensor_north_42",
-    "preferred_port": 9001
-}
-```
-**Go Response**:
-```json
-{
-    "status": "OK",
-    "camera_id": "cam_01",
-    "sensor_id": "sensor_north_42",
-    "port": 9001
-}
+{"event": "CAMERA_BOUND", "camera_id": "cam-01", "sensor_id": "CAM_NORTE_01", "port": 9001, "status": "READY"}
+{"event": "STATUS_CHANGE", "camera_id": "cam-01", "sensor_id": "CAM_NORTE_01", "port": 9001, "status": "CONNECTED"}
+{"event": "STATUS_CHANGE", "camera_id": "cam-01", "sensor_id": "CAM_NORTE_01", "port": 9001, "status": "DISCONNECTED"}
+{"event": "CAMERA_DETACHED", "camera_id": "cam-01", "status": "CLOSED"}
+{"event": "CONFIG_UPDATED", "status": "OK"}
+{"event": "PONG", "status": "OK"}
 ```
 
-### 2. `PUSH_TELEMETRY` Command (Python → Go)
-Sends a traffic micro-batch (Schema v2.0) without waiting for sync acknowledgement:
-```json
-{
-    "cmd": "PUSH_TELEMETRY",
-    "sensor_id": "sensor_north_42",
-    "payload": {
-        "sensor_id": "sensor_north_42",
-        "timestamp": 1772737200,
-        "traffic": { ... },
-        "hardware": { ... }
-    }
-}
-```
-
-### 3. `STATUS_CHANGE` Async Event (Go → Python)
-Notifies Python about physical network state transitions:
-```json
-{
-    "event": "STATUS_CHANGE",
-    "camera_id": "cam_01",
-    "sensor_id": "sensor_north_42",
-    "port": 9001,
-    "status": "CONNECTED"
-}
-```
-*Possible states: `CONNECTING`, `CONNECTED`, `DISCONNECTED`, `RECONNECTING`.*
+`SynapseUDSClient` forwards `CAMERA_BOUND`, `CAMERA_DETACHED`, and `STATUS_CHANGE` updates into `TelemetryBroadcaster`, updating the UI `synapse_ports` map in real time.
 
 ---
 
-## Automated Compilation in Boot
+## 4. Building & Running Standalone
 
-Developers and field technicians do not need to build Go binaries manually. The master bootstrapper [`svision.py`](configuration-reference.md) performs automatic compilation at boot:
+```bash
+cd svision-go
+go build -o ../bin/synapse-dispatcher .
 
-```python
-def _ensure_synapse_dispatcher():
-    bin_path = os.path.join(ROOT_DIR, "bin", "synapse-dispatcher")
-    go_src = os.path.join(ROOT_DIR, "svision-go")
-
-    # If executable does not exist, compile dynamically
-    if not (os.path.isfile(bin_path) and os.access(bin_path, os.X_OK)):
-        go_compiler = shutil.which("go")
-        if go_compiler and os.path.isdir(go_src):
-            subprocess.run([go_compiler, "build", "-C", go_src, "-o", bin_path, "."])
+# Standalone inspection (normally managed automatically by Python/F.E.N.I.X.)
+../bin/synapse-dispatcher --uds /tmp/svision_synapse.sock --host 127.0.0.1 --base-port 9001
 ```
 
-If the Go toolchain is not present on the host system, SVision logs a warning and falls back to its internal Python contingency dispatcher.
+Running the Go test suite (including race detector where supported):
+
+```bash
+cd svision-go
+go test -v -cover ./...
+go test -race ./...
+```
 
 ---
 
-## Related Documents
+## 5. Related Documentation
 
-- [🏠 Main Index / MOC](index.md)
-- [🏗️ Architecture Overview](architecture-overview.md)
-- [📤 Data Egress & Telemetry](data-egress.md)
-- [⚡ GPU Inference Pipeline](gpu-pipeline.md)
-- [🔒 Security & LGPD Compliance](security-lgpd.md)
-- [🧪 Testing the Go Dispatcher](development-testing.md)
+- [IPC Architecture](ipc-architecture.md)
+- [Data Egress & Flow Engine](data-egress.md)
+- [API & IPC Reference](api-and-ipc-reference.md)
+- [Security & LGPD](security-lgpd.md)
 
 ---
 
-<div align="center">
-  <img src="assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
-</div>
+*SVISION Core Documentation — v1.2.0 (2026-11-16)*

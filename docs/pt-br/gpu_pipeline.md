@@ -1,141 +1,82 @@
----
-tags: [svision, gpu, cuda, pytorch, tensorrt, yolo11, pipeline, inferencia, brasil]
-aliases: [Pipeline de Inferência GPU, Motor de Inferência, Consumidor de Lotes CUDA]
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<div align="center">
+# Pipeline de GPU, Fatiamento Temporal e Marchas Dinâmicas
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
-
-# Pipeline de Inferência GPU & TensorRT
-### Consumidor de Lotes Centralizado em CUDA, Câmbio de Modelos e Corte Neural
-*Noxfort Systems — A State Of Art Company*
-
-</div>
-
-⬅️ Voltar para a [Central Master MOC](svision_moc.md) | 🏛️ Ver [Arquitetura](architecture_overview.md) | 👁️ Ver [Subsistema de Visão](vision_subsystem.md) | 🔄 Ver [Ciclo da Câmera](camera_lifecycle.md)
+O pipeline de inferência em GPU do SVISION Core (`src/engine/`) foi projetado para extrair máxima densidade de câmeras por GPU NVIDIA mantendo latência determinística a **12 FPS**, isolamento estrito por fluxo e proteção térmica/VRAM em tempo real.
 
 ---
 
-## 1. Visão Geral da Arquitetura
+## 1. Visão Integrada da Execução em GPU
 
-O pipeline de inferência em GPU do **SVISION** implementa rigorosamente o padrão **Produtor-Consumidor** (*Producer-Consumer*), onde múltiplas instâncias de `CameraAgent` alimentam recortes neurais e um único **Consumidor de Lotes CUDA** (`CUDABatchConsumer`) centraliza todas as operações na GPU.
-
-Esse padrão elimina a contenção do Python GIL (*Global Interpreter Lock*) entre múltiplas threads e previne conflitos de contexto de execução no driver CUDA.
-
-```text
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ CameraAgent  │  │ CameraAgent  │  │ CameraAgent  │
-│   (cam_01)   │  │   (cam_02)   │  │   (cam_03)   │
-│              │  │              │  │              │
-│  FrameGrabber│  │  FrameGrabber│  │  FrameGrabber│
-│  Extr.Movim. │  │  Extr.Movim. │  │  Extr.Movim. │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │                 │                 │
-       │   submit_crop() │   submit_crop() │
-       ▼                 ▼                 ▼
-┌─────────────────────────────────────────────────┐
-│            Consumidor de Lotes CUDA             │
-│                                                 │
-│  ┌───────────────────────────────────────────┐  │
-│  │  asyncio.Queue (produtor-consumidor)      │  │
-│  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐          │  │
-│  │  │crop1│ │crop2│ │crop3│ │crop4│ ...       │  │
-│  │  └─────┘ └─────┘ └─────┘ └─────┘          │  │
-│  └───────────────────────────────────────────┘  │
-│                                                 │
-│  Empacotamento: max_batch=8 | timeout=5ms       │
-│                                                 │
-│  ┌───────────────────────────────────────────┐  │
-│  │  YOLO 11 (marcha ativa) + AMP autocast    │  │
-│  │  torch.cuda.amp.autocast(enabled=True)    │  │
-│  └───────────────────────────────────────────┘  │
-│                                                 │
-│  Resultados → asyncio.Future individual         │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    DEC["NvdecStreamDecoder<br/>Frames contínuos (<=720px)"] -->|"~83.3 ms (12 FPS)"| SCHED["SliceScheduler<br/>src/engine/slice_scheduler.py"]
+    SCHED -->|"Amostragem periférica 320px"| MOT["MotionExtractor<br/>Crops foveados >=64px + pad 32px"]
+    MOT -->|"Staging volátil RAM"| POOL["RamStagingPool"]
+    POOL -->|"Priorização demanda x latência"| VIP["VipKernelScheduler<br/>Lotes dinâmicos (4..32)"]
+    GOV["ElasticGovernor<br/>VRAM (15% / 1000MB) & Temp"] -->|"Telemetria + Throttling"| VIP
+    VIP -->|"Chunking <= MAX_BATCH"| TRT["TritonInt8Engine<br/>YOLO11 INT8 TensorRT"]
+    TRT -->|"Detecções isoladas por câmera"| SUP["PipelineSupervisor<br/>ModelGearbox + KalmanTracker 2D"]
+    SUP --> FFE["FluidFlowEstimator<br/>Canais direcionais -> Synapse"]
 ```
 
 ---
 
-## 2. Componentes do Pipeline
+## 2. Orquestrador Temporal a 12 FPS (`SliceScheduler`)
 
-### 2.1 Orquestrador Central (`CentralPipelineOrchestrator`)
-Localizado em `src/engine/pipeline_orchestrator.py`:
-- Supervisiona o ciclo de vida dos agentes de câmera (`CameraAgent`).
-- Monitora o registro de sensores no `StateManager` através de um loop assíncrono.
-- Instancia um `CameraAgent` dedicado para cada nova câmera adicionada via interface desktop.
-- Desaloca recursos de forma segura em caso de remoção de câmera.
-- Compartilha um único `ThreadPoolExecutor` para operações intensivas em CPU.
+Substituindo pipelines de loop contínuo sem controle de fase, o `SliceScheduler` (`src/engine/slice_scheduler.py`) opera no ritmo canônico de **12 FPS** (`SVISION_PIPELINE_TARGET_FPS = 12.0`, intervalo de `0.0833s`) gerenciado pelo `PipelineOrchestrator`:
 
-### 2.2 Agente de Câmera (`CameraAgent`)
-Localizado em `src/engine/camera_agent.py`:
-1. Verifica se a câmera completou sua calibração de fundo ([`camera_lifecycle.md`](camera_lifecycle.md)).
-2. Decodifica quadros via decodificação acelerada em hardware NVDEC ([`vision_subsystem.md`](vision_subsystem.md)).
-3. Extrai regiões dinâmicas de movimento (*Neural Crop & Zoom*).
-4. Submete recortes ao `CUDABatchConsumer` e aguarda a resolução do objeto `Future`.
-5. Atualiza o rastreamento cinemático com o algoritmo ByteTrack.
-6. Ajusta a marcha de inferência automaticamente via `ModelGearbox`.
-7. Envia micro-lotes de telemetria a 1 Hz via `SynapseEmitter` ([`data_egress.md`](data_egress.md)).
-
-### 2.3 Consumidor de Lotes CUDA (`CUDABatchConsumer`)
-Localizado em `src/engine/cuda_batch_consumer.py`:
-- **Empacotamento Dinâmico**: Aguarda o primeiro recorte na fila e agrupa entradas subsequentes até `max_batch=8` ou expiração do prazo de `5 ms`.
-- **Despacho Tensor Core**: Executa inferência em thread dedicada com `torch.cuda.amp.autocast(fp16=True)`.
-- **Resolução de Futuros**: Distribui caixas delimitadoras e scores de confiança de volta aos agentes solicitantes.
+- **Jitter de Fase Anti-Rajada (`-10ms` a `+10ms`):** Câmeras têm suas janelas escalonadas dentro do ciclo de `83.3 ms` via `SVISION_JITTER_MIN` / `SVISION_JITTER_MAX`, evitando picos simultâneos de decodificação CPU/NVDEC e alocação CUDA.
+- **Extração Foveada (`MotionExtractor`):** Cada slice é avaliado primeiro em resolução periférica (`SVISION_PERIPHERAL_WIDTH = 320 px`). Somente regiões com movimento persistente (`SVISION_TEMPORAL_MIN_FRAMES = 3` em grade de `32px`) geram crops de alta resolução (dimensão mínima `64px`, padding `32px`) armazenados no `RamStagingPool`.
+- **Fallback `CUDABatchConsumer`:** O módulo `cuda_batch_consumer.py` atua como consumidor auxiliar/fallback compatível quando o fluxo requer processamento de lote desacoplado.
 
 ---
 
-## 3. Câmbio de Modelos (Model Gearbox)
+## 3. Motor TensorRT INT8 com Chunking Automático (`TritonInt8Engine`)
 
-O SVISION mantém múltiplos modelos **YOLO 11** residentes na VRAM da GPU, compilados em motores de alta performance **TensorRT FP16** (`.engine`):
+Localizado em `src/engine/triton_int8_engine.py`, gerencia quatro engines YOLO11 compiladas em precisão INT8 (`Nano`, `Small`, `Medium`, `Heavy`) dentro de `src/models/yolo/`:
 
-| Marcha | Modelo | Tamanho dos Pesos | Cenário Operacional |
-|:---:|:---:|:---:|---|
-| **Nano** | YOLO 11n | ~6 MB | Tráfego baixo, economia de energia e alívio térmico |
-| **Small** | YOLO 11s | ~22 MB | Tráfego urbano moderado padrão |
-| **Medium** | YOLO 11m | ~48 MB | Tráfego intenso e oclusões moderadas de veículos |
-| **Heavy** | YOLO 11x | ~130 MB | Horários de pico, máxima precisão em cruzamentos complexos |
-
-O **Model Gearbox** implementa uma máquina de estados finitos que utiliza médias móveis exponenciais (EMA), faixas de histerese e tempos de permanência (*dwell times*) para impedir oscilações erráticas de marcha (*gear hunting*):
-
-```text
-                 Sinal de Carga de Tráfego (EMA)
-                               │
-               ┌───────────────┼───────────────┐
-               │               │               │
-               ▼               ▼               ▼
-             ┌────┐         ┌─────┐        ┌──────┐        ┌─────┐
-             │Nano│ ──12──► │Small│ ──28──►│Medium│ ──60──► │Heavy│
-             │    │ ◄──7── │     │ ◄──18──│      │ ◄──40── │     │
-             └────┘         └─────┘        └──────┘        └─────┘
-              dwell:3s      dwell:5s       dwell:5s        dwell:8s
-```
+- **Inspeção Dinâmica de `MAX_BATCH` (`_read_engine_batch_limit()`):** Ao carregar um `.engine`, o motor inspeciona os limites reais de binding TensorRT do arquivo compilado (usando `SVISION_TRT_MAX_BATCH = 16` como fallback).
+- **Fatiamento Seguro de Lotes (*Chunking*):** Caso o `VipKernelScheduler` entregue 24 crops de múltiplas câmeras simultâneas para uma engine com limite 16, `TritonInt8Engine` subdivide automaticamente em chunks compatíveis (`16 + 8`), evitando falhas silenciosas ou estouros de contexto CUDA.
+- **Carregamento Sob Demanda & Eviction:** Com `SVISION_GEARBOX_ON_DEMAND = True`, marchas mais pesadas só ocupam VRAM quando efetivamente exigidas, podendo ser descarregadas sob pressão crítica de memória.
 
 ---
 
-## 4. Governança Térmica e Recorte Neural
+## 4. Câmbio Dinâmico de Marchas (`ModelGearbox`) & Isolamento (`PipelineSupervisor`)
 
-### 4.1 Governador Elástico (`ElasticGovernor`)
-- Monitora a alocação de memória VRAM e temperatura de junção via `pynvml`.
-- Em situações de estresse térmico ou saturação de memória, reduz taxas de quadros e rebaixa as marchas ativas para evitar falhas por falta de memória (*Out of Memory - OOM*).
+| Marcha (`Gear`) | Modelo Base | Cenário Típico de Uso |
+| :--- | :--- | :--- |
+| **`Nano`** | `yolo11n.engine` | Baixa complexidade, alta densidade de câmeras ou modo econômico sob pressão térmica/VRAM. |
+| **`Small`** | `yolo11s.engine` | Equilíbrio padrão para vias urbanas moderadas. |
+| **`Medium`** | `yolo11m.engine` | Cruzamentos densos e veículos de pequeno porte a média distância. |
+| **`Heavy`** | `yolo11l.engine` | Alta oclusão ou cenas complexas com folga ampla de VRAM e GPU. |
 
-### 4.2 Recorte e Zoom Neural (Neural Crop & Zoom)
-Em vez de submeter quadros completos de resolução 1080p ou 4K diretamente à rede neural, o SVISION foca o poder computacional nas regiões ativas:
-1. Subtração de fundo identifica caixas delimitadoras de movimento.
-2. Recortes neurais com margem de segurança são extraídos do quadro.
-3. Apenas os recortes são processados pelo lote da GPU.
-4. As coordenadas dos veículos detectados são projetadas de volta nas coordenadas globais da câmera.
-
-**Ganhos Reais**:
-- Redução de **60% a 80%** na área de pixels processada pela GPU.
-- Maior resolução efetiva sobre veículos distantes na cena.
-- Dissipação térmica significativamente reduzida no dispositivo de borda.
+- **Isolamento por Câmera:** O `PipelineSupervisor` (`src/engine/pipeline_supervisor.py`) instancia um `ModelGearbox` e um `KalmanTracker` próprios para cada `camera_id`, eliminando interferência cruzada e troca prematura de marchas entre câmeras diferentes.
+- **Anti-Oscilação (*Heavy Dwell*):** `SVISION_HEAVY_DWELL_SECONDS = 30.0` garante permanência mínima na marcha `Heavy` antes de permitir redução, evitando *thrashing* de troca de engine em GPU.
 
 ---
 
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Engenharia de Visão de Borda Soberana • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licenciado sob AGPLv3.</small>
-</div>
+## 5. Governança Elástica e Escalonamento VIP
+
+### `ElasticGovernor` (`src/engine/elastic_governor.py`)
+- Monitora utilização de GPU, temperatura e VRAM livre em tempo real (suavização EMA com `alpha = 0.15`).
+- Mantém reserva mínima de **`15%` (`SVISION_VRAM_SAFETY_RATIO = 0.15`)** e piso crítico absoluto de **`1000.0 MB` (`SVISION_VRAM_CRITICAL_MB`)**.
+- Quando VRAM ou temperatura atingem patamares críticos, dispara `gpu_health_alert` para o frontend e força redução de marchas e tamanho de lote no `VipKernelScheduler`.
+
+### `VipKernelScheduler` (`src/engine/vip_scheduler.py`)
+- Calcula prioridade de cada requisição de inferência ponderando demanda de movimento (`SVISION_DEMAND_WEIGHT = 1.2`) e tempo de espera (`SVISION_LATENCY_WEIGHT = 0.8`).
+- Ajusta dinamicamente o tamanho alvo do lote entre `SVISION_SCHEDULER_MIN_BATCH = 4` e `SVISION_SCHEDULER_MAX_BATCH = 32` (padrão `20`) com base no orçamento estimado por crop (`SVISION_CROP_COST_MB = 12.0`).
+
+---
+
+## 6. Documentação Relacionada
+
+- [Supervisor F.E.N.I.X.](fenix_supervisor.md)
+- [Subsistema de Visão](vision_subsystem.md)
+- [Referência de Configuração](configuration_reference.md)
+- [Desenvolvimento e Compilação INT8](development_testing.md)
+
+---
+
+*Documentação SVISION Core — v1.2.0 (2026-11-16)*

@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -95,7 +98,13 @@ class TelemetryBroadcaster:
 
                 # ── Stage 4: Network Metrics ──────────────────────────
                 active_streams = len(stream_decoder._active_streams)
-                net_stats = hardware_telemetry.sample_network(1, active_streams, dropped_frames)
+                total_received = sum(
+                    s.get("frames_received", 0)
+                    for s in stream_decoder._active_streams.values()
+                )
+                net_stats = hardware_telemetry.sample_network(
+                    1, active_streams, dropped_frames, frames_received=total_received
+                )
                 state_manager.update_network_stats(**net_stats)
 
                 # ── Stage 5: Camera Health Polling ────────────────────
@@ -117,6 +126,7 @@ class TelemetryBroadcaster:
                 self._emit_event("engine_stats", state_manager.get_topic_state("engine_stats"))
                 self._emit_event("network_stats", state_manager.get_topic_state("network_stats"))
                 self._emit_event("cameras", state_manager.get_topic_state("cameras"))
+                self._emit_event("synapse_ports", state_manager.get_topic_state("synapse_ports"))
 
                 # Heartbeat latency
                 latency_ms = round((now - self._last_heartbeat_ts) * 1000, 1)

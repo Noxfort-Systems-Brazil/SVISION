@@ -1,154 +1,92 @@
----
-title: "Edge Deployment, Operations & Troubleshooting (Systemd & Docker)"
-tags: [svision, deployment, operations, systemd, docker, jetson, nvidia, edge-ai]
-aliases: ["Deployment & Operations", "Edge Deployment", "Systemd Service", "Troubleshooting"]
-updated: 2026-09-05
-category: "Engineering, Configuration & Operations"
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-[🏠 Home](../index.md) › **Deployment and Operations**
+# Deployment, Containers & Operations
+
+Production deployment guide for SVISION Core using systemd, Docker/Docker Compose, F.E.N.I.X. watchdog supervision, SQLite persistence, and operational troubleshooting.
 
 ---
 
-# Edge Deployment, Operations & Troubleshooting (Systemd & Docker)
+## 1. Systemd Service Deployment (`svision.service`)
 
-> SVision — Architecture Documentation  
-> Copyright © 2026 Gabriel Moraes — Noxfort Systems
-
----
-
-## Overview
-
-SVision is engineered for continuous 24/7 mission-critical operations on industrial edge gateways deployed inside roadside traffic cabinets (e.g., **NVIDIA Jetson AGX Orin**, **Orin Nano**, or industrial x86 servers equipped with NVIDIA RTX GPUs).
-
-This guide covers production deployment strategies: native service management via **Systemd**, containerized deployment with **Docker/Docker Compose**, diagnostic monitoring, and troubleshooting.
-
----
-
-## 1. Native Service Deployment (`systemd`)
-
-For production environments where SVision must launch automatically on system boot and restart upon unexpected failure:
-
-### Unit Service File (`svision.service`)
+The repository ships a hardened unit template in [`svision.service`](../../svision.service):
 
 ```ini
-[Unit]
-Description=SVision - Sovereign Edge AI Cognitive Core
-After=network.target nvidia-persistenced.service
-Wants=network-online.target
-
 [Service]
-Type=simple
-User=svision
-Group=svision
-WorkingDirectory=/opt/svision/SVISION_CORE
-Environment="PYTHONUNBUFFERED=1"
-Environment="SVISION_HEADLESS=1"
-Environment="PATH=/opt/svision/SVISION_CORE/.venv/bin:/usr/local/cuda/bin:/usr/bin"
-ExecStart=/opt/svision/SVISION_CORE/.venv/bin/python svision.py --daemon
-Restart=always
-RestartSec=5s
-KillSignal=SIGTERM
-TimeoutStopSec=15s
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
+WorkingDirectory=/opt/svision-core
+ExecStart=/opt/svision-core/.venv/bin/python /opt/svision-core/svision.py --daemon
 ```
 
-### Installation and Management
+For unattended 24/7 roadside or traffic operations center (TOC) servers where GPU driver resets or OOM spikes should recover cleanly without manual intervention, wrap execution with the **F.E.N.I.X. Supervisor**:
 
-```bash
-# 1. Copy unit file to systemd directory
-sudo cp svision.service /etc/systemd/system/svision.service
-
-# 2. Reload systemd daemon
-sudo systemctl daemon-reload
-
-# 3. Enable automatic boot startup
-sudo systemctl enable svision.service
-
-# 4. Start service immediately
-sudo systemctl start svision.service
-
-# 5. Inspect real-time operational logs
-journalctl -u svision.service -f -o cat
+```ini
+ExecStart=/opt/svision-core/.venv/bin/python /opt/svision-core/svision.py --supervisor
 ```
+
+> **Note:** F.E.N.I.X. injects `SVISION_SUPERVISED=1` and runs `VisionStateReconciler` on every restart before launching `--daemon --supervised`. See [F.E.N.I.X. Supervisor](fenix_supervisor.md).
 
 ---
 
-## 2. Containerized Deployment (Docker & Docker Compose)
+## 2. Container Deployment (`Dockerfile` & `docker-compose.yml`)
 
-For automated edge container orchestration (e.g., Kubernetes k3s, Portainer, or balenaOS):
+### Multi-Stage Image ([`Dockerfile`](../../Dockerfile))
+1. **Builder Stage (`golang:1.22-alpine`):** Compiles `svision-go/` into static binary `/app/bin/synapse-dispatcher`.
+2. **Runtime Stage (`python:3.12-slim`):** Installs Python runtime dependencies, copies `src/`, `svision.py`, `settings.ini`, and `bin/synapse-dispatcher`, and persists XDG database storage under `/root/Documents/Svision/database`.
 
-### Hardware Passthrough Prerequisite
-Install the **NVIDIA Container Toolkit** on the host operating system to enable GPU NVDEC and Tensor Core passthrough into Docker containers:
-```bash
-sudo apt-get install -y nvidia-container-toolkit
-sudo systemctl restart docker
-```
-
-### Starting via Docker Compose
+### Host-Mode Compose ([`docker-compose.yml`](../../docker-compose.yml))
+- **`network_mode: host`:** Enables direct RTSP LAN ingress and Synapse TCP port binding (`9001+`) without NAT translation overhead.
+- **Volume `/tmp:/tmp`:** Shares `/tmp/svision_synapse.sock` (`0600`) cleanly.
+- **Volume `svision-data:/root/Documents/Svision/database`:** Persists `svision_telemetry.db` (`cameras` and `traffic_profiles`) across container upgrades so `StdioDaemon` re-hydrates all cameras on restart.
 
 ```bash
-# Build image and start in background
 docker compose up -d --build
-
-# Follow container logs
-docker compose logs -f
 ```
 
 ---
 
-## 3. Operational Monitoring & Maintenance
+## 3. Persistent Operational Artifacts
 
-### Monitoring GPU VRAM & Thermal Load
-```bash
-watch -n 1 nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv
-```
-
-### Graceful Teardown Sequence
-When receiving `SIGINT` (Ctrl+C) or `SIGTERM` (via `systemctl stop`):
-1. The master bootstrapper [`svision.py`](architecture_overview.md) intercepts the signal.
-2. Halts RTSP video decoding threads and queue consumers.
-3. Terminates the Go Dispatcher child process ([`svision-go`](synapse_dispatcher_go.md)).
-4. Runs `gc.collect()` and clears GPU VRAM caches with `torch.cuda.empty_cache()`.
-5. Removes temporary Unix domain socket files in `/tmp`.
+| Artifact | Host Path (Linux Default) | Purpose |
+| :--- | :--- | :--- |
+| **SQLite State DB** | `~/Documentos/Svision/database/svision_telemetry.db` | Saved cameras, Synapse ports, `3x3` homographies, `tuning_params`, and traffic profiles. |
+| **INI Configuration** | `./settings.ini` (`$SVISION_SETTINGS_FILE`) | Target `[SYNAPSE]` `host` and `base_port`. |
+| **Topology JSON (optional)** | `~/Documentos/Svision/topologies/<camera_id>.json` | Optional lane/sector geometry parsed by `AutoLaneMapper`. |
+| **UDS Socket** | `/tmp/svision_synapse.sock` | Control/telemetry Unix socket (`0600`). |
+| **TensorRT Engines** | `src/models/yolo/*.engine` | Compiled INT8 YOLO11 gear engines (`Nano`, `Small`, `Medium`, `Heavy`). |
 
 ---
 
-## 4. Troubleshooting Guide
+## 4. Operational Troubleshooting
 
-### A. Warning: "Rust/Cargo not detected in PATH"
-- **Cause**: SVision was launched on a machine without the Rust toolchain.
-- **System Behavior**: The bootstrapper automatically falls back to **Headless Daemon** mode (`--daemon`), running computer vision and network telemetry in the background without UI.
-- **Remedy (to enable GUI)**: Install Rust via `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` and ensure `~/.cargo/bin` is in PATH.
+### Camera Stuck in `ERROR` State During Calibration
+- **Cause:** `AutonomicSceneConvergence` (`src/vision/asc_analyzer.py`) waited `240` empty polls (~12s) without receiving real frames from `NvdecStreamDecoder` (there is no synthetic random-noise fallback).
+- **Resolution:** Check RTSP network reachability, verify FFmpeg/NVDEC codec compatibility, and inspect `_sanitized_excepthook` stderr logs for masked RTSP credential/connection failures.
 
-### B. Warning: "NVDEC path failed. Falling back to CPU software decoding"
-- **Cause**: The RTSP stream codec is not supported by NVDEC hardware or NVIDIA drivers are uninitialized.
-- **System Behavior**: `StreamDecoder` drops hardware acceleration flags and activates multi-threaded CPU software decoding.
-- **Remedy**: Verify `nvidia-smi` output and ensure the camera stream is configured to **H.264** or **H.265 (HEVC)**.
+### Speed Reported With `"calibrated": false` (`Sem Homografia`)
+- **Cause:** No `3x3` homography matrix has been loaded for the sensor, so `FluidFlowEstimator` is falling back to uncalibrated pixel/bbox velocity estimates.
+- **Resolution:** Open the Calibration & Parameters Modal (`SlidersHorizontal`) in `CamerasTab` or issue IPC `set_homography` with at least 4 corresponding `image_points` and `world_points` meter coordinates.
 
-### C. Error: "UDS Connection Refused (/tmp/svision_synapse.sock)"
-- **Cause**: The Go Dispatcher process was terminated abruptly or the socket file permissions belong to another user.
-- **Remedy**: Delete stale sockets via `rm -f /tmp/svision_synapse.sock` and restart the service.
+### Downstream Synapse Node Not Receiving Data
+- **Cause:** Go `CameraStream.Push()` enforces a strict Zero-Backlog policy — if TCP handshake fails (`1500ms` dial timeout, `2s` worker retry tick) or write exceeds `100ms`, packets drop immediately rather than queuing.
+- **Resolution:** Confirm target `synapse_host` (`SynapseTab` / `settings.ini`), verify firewall allows ports `9001+`, and inspect `synapse_ports` event status (`CONNECTED` vs `DISCONNECTED`).
 
----
+### UDS Permission Denied Between Python and Go
+- **Cause:** `svision-go/uds_server.go` locks `/tmp/svision_synapse.sock` to `0600`.
+- **Resolution:** Run Python and Go under the same OS user, or configure `SVISION_SYNAPSE_UDS_MODE` intentionally in multi-user containers.
 
-## Related Documents
-
-- [🏠 Main Index / MOC](../index.md)
-- [🏗️ Architecture Overview](architecture_overview.md)
-- [⚡ GPU Inference Pipeline](gpu_pipeline.md)
-- [🌐 Go Synapse Dispatcher](synapse_dispatcher_go.md)
-- [⚙️ Configuration Reference](configuration_reference.md)
-- [🧪 Testing & Benchmarks](development_testing.md)
+### VRAM Spikes / TensorRT Batch Exceeded
+- **Cause:** High motion density across many simultaneous cameras triggering `Heavy` gear or >16 crops.
+- **Resolution:** `TritonInt8Engine` automatically chunks crops to `_read_engine_batch_limit()`, while `ElasticGovernor` downshifts gears based on `SVISION_VRAM_SAFETY_RATIO` (`0.15`) and `SVISION_VRAM_CRITICAL_MB` (`1000.0`). On fatal driver faults under `--supervisor`, **F.E.N.I.X.** runs `VisionStateReconciler.purge_gpu_memory()` before restarting cleanly.
 
 ---
 
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Sovereign Edge Vision Engineering • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licensed under AGPLv3.</small>
-</div>
+## 5. Related Documentation
+
+- [F.E.N.I.X. Supervisor](fenix_supervisor.md)
+- [Configuration Reference](configuration_reference.md)
+- [Security & LGPD](security_lgpd.md)
+- [Development & Testing](development_testing.md)
+
+---
+
+*SVISION Core Documentation — v1.2.0 (2026-11-16)*

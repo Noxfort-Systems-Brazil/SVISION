@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -101,13 +104,13 @@ class ElasticGovernor:
 
         # 1. Fetch hardware memory state
         hw_sample = self._telemetry.sample_hardware()
-        total_vram = hw_sample.get("vram_total", 8192.0)
-        
+        total_vram = float(hw_sample.get("vram_total") or 8192.0)
+
         if forced_vram_free_mb is not None:
             free_vram = forced_vram_free_mb
         else:
             # vram_usage in telemetry is in MB
-            used_vram = hw_sample.get("vram_usage", 0.0)
+            used_vram = float(hw_sample.get("vram_usage") or 0.0)
             free_vram = max(0.0, total_vram - used_vram)
 
         # 2. Compute dynamic demand factor [0.0 to 1.0]

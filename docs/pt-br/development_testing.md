@@ -1,94 +1,84 @@
----
-tags: [svision, desenvolvimento, testes, pytest, vitest, go, benchmark, tensorrt, brasil]
-aliases: [Guia de Desenvolvimento e Testes, Ambiente de Desenvolvimento, Testes Automatizados]
----
+<!-- SPDX-License-Identifier: Proprietary -->
+<!-- Copyright (c) 2026-present Gabriel Moraes / SVISION. All rights reserved. -->
 
-<div align="center">
+# Guia de Desenvolvimento, Compilação e Testes
 
-<img src="../assets/svision-logo.png" alt="SVISION Logo" width="120" />
-
-# Guia de Desenvolvimento, Compilação & Testes
-### Configuração de Estação de Trabalho, Compilação de Motores TensorRT e Suítes de Teste
-*Noxfort Systems — A State Of Art Company*
-
-</div>
-
-⬅️ Voltar para a [Central Master MOC](svision_moc.md) | 🏛️ Ver [Arquitetura](architecture_overview.md) | ⚡ Ver [Pipeline GPU](gpu_pipeline.md) | 🚀 Ver [Implantação](deployment_operations.md)
+Instruções práticas para ambiente local, compilação TensorRT INT8, modos de execução, gravação em Modo Demo e suítes completas de verificação.
 
 ---
 
-## 1. Visão Geral
-
-Este guia detalha a preparação do ambiente de desenvolvimento, compilação dos componentes heterogêneos (**Python**, **Rust**, **React/TypeScript**, **Go**) e execução das suítes de testes unitários, testes de integração e benchmarks de estresse em hardware acelerado.
-
----
-
-## 2. Pré-requisitos de Ambiente
-
-- **Sistema Operacional**: Linux x86_64 (Ubuntu 22.04 LTS ou 24.04 LTS recomendado)
-- **Python**: 3.12+
-- **Node.js**: v20+ e gerenciador `npm`
-- **Rust & Cargo**: Toolchain estável (`rustup default stable`)
-- **Go**: Versão 1.22+
-- **Aceleração em Hardware**: GPU NVIDIA (Série RTX 30/40 ou módulo Jetson Orin), drivers oficiais NVIDIA, **CUDA 12.x** e **TensorRT 10.x**.
-
----
-
-## 3. Instalação e Inicialização
+## 1. Preparação do Ambiente
 
 ```bash
-# 1. Clonar o repositório
-git clone https://github.com/Noxfort-Systems-Brazil/SVISION.git
-cd SVISION_CORE
-
-# 2. Criar e ativar o ambiente virtual Python
-python3.12 -m venv .venv
+# Ambiente Python (.venv)
+python3 -m venv .venv
 source .venv/bin/activate
-
-# 3. Instalar dependências Python
-pip install --upgrade pip
 pip install -r requirements.txt
 
-# 4. Instalar dependências da interface desktop
+# Compilação do Dispatcher Go
+cd svision-go
+go build -o ../bin/synapse-dispatcher .
+cd ..
+
+# Dependências Node / React Workstation UI
 npm install
 ```
 
 ---
 
-## 4. Execução das Suítes de Testes
+## 2. Modos de Execução
 
-### A. Testes do Núcleo Python (`pytest`)
-```bash
-# Executa todos os testes unitários e de integração com cobertura
-pytest tests/ -v --cov=src --cov-report=term-missing
-```
+| Modo | Comando | Uso |
+| :--- | :--- | :--- |
+| **Daemon Headless** | `.venv/bin/python svision.py --daemon` | Sobe `StdioDaemon` + Go Dispatcher + hidratação SQLite via STDIN/STDOUT. |
+| **Supervisão F.E.N.I.X.** | `.venv/bin/python svision.py --supervisor` (ou `--fenix`) | Executa `FenixSupervisor` monitorando saúde do processo worker (`--daemon --supervised`) e VRAM. |
+| **UI Workstation (Demo)** | `npm run dev` | Abre a interface React no navegador em Modo Demo automático (`?demo=true` ou sem Tauri). |
+| **Aplicativo Tauri Nativo** | `npm run tauri dev` | Abre o workstation nativo integrado ao host Rust e daemon Python. |
+| **Gravação Automática** | `npm run record` | Executa [`record_presentation.cjs`](../../record_presentation.cjs) via Playwright em 1920x1080 @ 60 FPS salvando `recordings/svision_apresentacao.mp4`. |
 
-### B. Testes da Interface Desktop React (`vitest`)
-```bash
-npm run test
-```
+---
 
-### C. Testes e Benchmarks do Despachante Go (`go test`)
+## 3. Compilação TensorRT INT8 (`scripts/compile_int8.py`)
+
 ```bash
-cd svision-go
-go test -v ./... -bench=. -benchmem
+# Verificar engines disponíveis em src/models/yolo/
+.venv/bin/python scripts/compile_int8.py --check
+
+# Compilar todas as marchas (Nano, Small, Medium, Heavy) com batch padrão 16
+.venv/bin/python scripts/compile_int8.py --all
+
+# Compilar marcha específica com dataset/batch/workspace customizados ou FP16
+.venv/bin/python scripts/compile_int8.py --gear Medium --calib coco8.yaml --batch 16 --workspace 2
+.venv/bin/python scripts/compile_int8.py --gear Nano --fp16
 ```
 
 ---
 
-## 5. Compilação de Motores TensorRT
+## 4. Suíte Unificada de Testes & CI
 
-Para compilar os pesos do YOLO 11 em motores `.engine` TensorRT FP16 ou INT8 calibrados:
+Todas as checagens locais estão automatizadas em [`scripts/run_all_tests.sh`](../../scripts/run_all_tests.sh) (espelhado em [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)):
 
 ```bash
-python scripts/compile_trt.py --model yolo11n.pt --precision fp16 --output models/
+bash scripts/run_all_tests.sh
 ```
+
+| Camada | Escopo | Comando Direto |
+| :--- | :--- | :--- |
+| **Lint Python** | `src/` e `tests/` (`pyproject.toml`) | `.venv/bin/ruff check src/ tests/` |
+| **Testes Python** | 23 módulos Pytest (`tests/test_*.py`) cobrindo F.E.N.I.X., `SliceScheduler`, `TritonInt8Engine`, `ElasticGovernor`, `FluidFlowEstimator`, Kalman 2D, `NvdecStreamDecoder`, `AutoLaneMapper`, `ASCAnalyzer`, SQLite, IPC e Wavelet AE | `.venv/bin/pytest tests/ --cov=src --cov-report=term-missing` |
+| **Testes Go** | 5 arquivos `svision-go/*_test.go` | `cd svision-go && go test -v -cover ./...` (ou `go test -race ./...`) |
+| **Testes React** | 5 arquivos Vitest (`ui/**/*.test.*`) | `npm run test` |
+| **Verificação Rust** | Crate Tauri (`src-tauri/`) | `cd src-tauri && cargo check` |
 
 ---
 
-<div align="center">
-  <img src="../assets/noxfort-logo.png" alt="Noxfort Systems Logo" width="45" /><br/>
-  <b>Noxfort Systems</b> — <i>A State Of Art Company</i><br/>
-  <i>Engenharia de Visão de Borda Soberana • SVISION v1.2.0</i><br/>
-  <small>© 2026 Noxfort Systems. Licenciado sob AGPLv3.</small>
-</div>
+## 5. Documentação Relacionada
+
+- [Supervisor F.E.N.I.X.](fenix_supervisor.md)
+- [Pipeline de GPU e Marchas](gpu_pipeline.md)
+- [Interface Desktop e Tauri](desktop_ui_tauri.md)
+- [Guia de Contribuição](../../CONTRIBUTING.md)
+
+---
+
+*Documentação SVISION Core — v1.2.0 (2026-11-16)*

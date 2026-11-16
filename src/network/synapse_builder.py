@@ -1,6 +1,9 @@
 # SVISION (Synapse Vision) is a sovereign edge AI platform engineered for real-time urban traffic analysis and autonomous signal orchestration.
 # Copyright (C) 2026 Noxfort Systems
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Noxfort Systems
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -33,7 +36,7 @@ Strict real-time: non-blocking, zero backlog, drops if socket unavailable.
 
 import time
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger("synapse_builder")
 
@@ -45,6 +48,42 @@ class SynapseBuilder:
     All emissions share the same lean JSON contract:
       { sensor_id, timestamp, window_ms, is_heartbeat, traffic{}, hardware{} }
     """
+
+    @staticmethod
+    def build_fluid_payload(
+        camera_id: str,
+        channels: list,
+        is_heartbeat: bool = False,
+        calibrated: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Builds the ultra-lean fluid dynamics continuum payload.
+
+        Example:
+          {
+            "camera_id": "svision_01",
+            "timestamp": 1787196563800,
+            "is_heartbeat": false,
+            "calibrated": false,
+            "channels": [
+              {
+                "direction_deg": 115.0,
+                "speed": 45.0,
+                "density": 0.25
+              }
+            ]
+          }
+        """
+        valid_channels = channels if channels else [
+            {"direction_deg": 0.0, "speed": 0.0, "density": 0.0}
+        ]
+        return {
+            "camera_id": camera_id,
+            "timestamp": int(time.time() * 1000),
+            "is_heartbeat": is_heartbeat,
+            "calibrated": calibrated,
+            "channels": valid_channels
+        }
 
     @staticmethod
     def build_unified_payload(
@@ -93,14 +132,17 @@ class SynapseBuilder:
         return payload
 
     @staticmethod
-    async def dispatch(payload: Dict[str, Any]):
+    async def dispatch(payload: Dict[str, Any], camera_id: Optional[str] = None) -> bool:
         """
         Fire-and-forget push via Unix Domain Socket to Go Synapse Dispatcher.
         Strict real-time: non-blocking, zero backlog, drops if socket unavailable.
         """
         from src.network.synapse_uds_client import synapse_uds_client
-        sensor_id = payload.get("sensor_id", "")
-        synapse_uds_client.push_telemetry(sensor_id, payload)
+        routing_id = camera_id or payload.get("sensor_id") or payload.get("camera_id", "")
+        if not routing_id:
+            logger.warning("[SynapseBuilder] Drop dispatch: missing routing camera_id/sensor_id.")
+            return False
+        return synapse_uds_client.push_telemetry(str(routing_id), payload)
 
     # ── Legacy Compatibility (used by tests) ────────────────────────
 
